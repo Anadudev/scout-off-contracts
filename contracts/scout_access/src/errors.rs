@@ -56,6 +56,10 @@ pub enum ScoutAccessError {
     TrialOfferRateLimited = 19,
     /// Pro-tier scout has reached the contact limit for the current subscription period.
     ProContactLimitReached = 20,
+    /// The trial offer has already been confirmed.
+    TrialOfferAlreadyConfirmed = 22,
+    /// The trial offer has expired without confirmation.
+    TrialOfferExpired = 23,
 
     // ── Cross-contract & arithmetic ──
     /// Arithmetic overflow occurred.

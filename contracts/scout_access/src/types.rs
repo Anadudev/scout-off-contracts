@@ -57,6 +57,14 @@ pub struct ProContactPeriod {
     pub count: u32,
 }
 
+/// Escrow record for a trial offer
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TrialEscrow {
+    pub amount: i128,
+    pub expires_at: u64,
+}
+
 /// Platform fee configuration
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -73,6 +81,10 @@ pub struct FeeConfig {
     pub sub_duration_secs: u64,
     /// Maximum contacts per month for Pro tier (default: 10)
     pub pro_contact_limit: u32,
+    /// Escrow amount for trial offers (stroops)
+    pub trial_offer_escrow_stroops: i128,
+    /// Expiry window for trial offers (seconds)
+    pub trial_offer_expiry_secs: u64,
 }
 
 #[contracttype]
@@ -111,4 +123,5 @@ pub enum DataKey {
     PlayerContacts(u64),
     /// scout → Vec<(player_id, trial_index)> of all trial offers sent
     ScoutTrialOffers(Address),
-}
+    /// (player_id, trial_index) → TrialEscrow (holds escrow amount & expiry)
+    TrialEscrow(u64, u32),}

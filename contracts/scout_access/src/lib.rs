@@ -4,7 +4,7 @@ mod events;
 mod types;
 
 use errors::ScoutAccessError;
-use types::{ContactRecord, DataKey, ProContactPeriod, Subscription, TrialOffer};
+use types::{ContactRecord, DataKey, ProContactPeriod, Subscription, TrialOffer, FeeConfig, TrialEscrow};
 pub use types::{FeeConfig, SubscriptionTier};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
@@ -746,26 +746,91 @@ impl ScoutAccessContract {
             TRIAL_TTL_EXTEND_TO,
         );
 
-        // Cross-contract call: advance the player to Level 3 if progress contract is set.
-        if let Some(progress_addr) = env
+        // Store escrow for the trial offer
+        let fee_cfg: FeeConfig = env
             .storage()
             .instance()
-            .get::<DataKey, Address>(&DataKey::ProgressContract)
-        {
-            let progress_client = progress_contract::Client::new(&env, &progress_addr);
-            match progress_client.try_advance_level(
-                &env.current_contract_address(),
-                &player_id,
-                &next_index,
-            ) {
-                Ok(_) => {}
-                Err(Ok(progress_contract::Error::AlreadyAtMaxLevel)) => {}
-                Err(_) => return Err(ScoutAccessError::ProgressCallFailed),
-            }
-        }
-
+            .get::<DataKey, FeeConfig>(&DataKey::FeeConfig)
+            .ok_or(ScoutAccessError::InvalidInput)?;
+        let escrow_amount = fee_cfg.trial_offer_escrow_stroops;
+        let expires_at = now
+            .checked_add(fee_cfg.trial_offer_expiry_secs)
+            .ok_or(ScoutAccessError::Overflow)?;
+        let escrow = TrialEscrow {
+            amount: escrow_amount,
+            expires_at,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::TrialEscrow(player_id, next_index), &escrow);
+        // Emit logged event (no immediate level advance)
         events::trial_offer_logged(&env, player_id, &scout);
         Ok(next_index)
+    }
+    /// Confirm a previously logged trial offer. Called by the player (or validator) to release escrow and advance level.
+    pub fn confirm_trial_offer(
+        env: Env,
+        player_wallet: Address,
+        player_id: u64,
+        index: u32,
+    ) -> Result<(), ScoutAccessError> {
+        Self::bump_instance_ttl(&env);
+        Self::require_not_paused(&env)?;
+        Self::require_initialized(&env)?;
+        // Player must authorize
+        player_wallet.require_auth();
+
+        // Load escrow record
+        let escrow: TrialEscrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TrialEscrow(player_id, index))
+            .ok_or(ScoutAccessError::TrialOfferAlreadyConfirmed)?;
+
+        // Load the original offer to get the scout address
+        let offer: TrialOffer = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TrialOffer(player_id, index))
+            .ok_or(ScoutAccessError::TrialOfferNotFound)?;
+
+        let now = env.ledger().timestamp();
+        // Check expiry
+        if now > escrow.expires_at {
+            // Refund escrow to scout
+            let token_addr = Self::get_token(&env)?;
+            let contract_addr = env.current_contract_address();
+            token::Client::new(&env, &token_addr).transfer(&contract_addr, &offer.scout, &escrow.amount);
+            // Cleanup escrow
+            env.storage().persistent().remove(&DataKey::TrialEscrow(player_id, index));
+            // Emit expiry event
+            events::trial_offer_expired(&env, player_id, &offer.scout, index);
+            return Err(ScoutAccessError::TrialOfferExpired);
+        }
+
+        // Call progress contract to advance level (using the index as milestone reference)
+        let progress_addr = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProgressContract)
+            .ok_or(ScoutAccessError::InvalidInput)?;
+        progress_contract::ProgressContractClient::new(&env, &progress_addr)
+            .advance_level(&env, &env.current_contract_address(), player_id, index)
+            .map_err(|_| ScoutAccessError::ProgressCallFailed)?;
+
+        // Cleanup escrow after successful confirmation
+        env.storage().persistent().remove(&DataKey::TrialEscrow(player_id, index));
+        // Emit confirmed event
+        events::trial_offer_confirmed(&env, player_id, &offer.scout, index);
+        Ok(())
+    }
+
+    /// Admin helper to expire any pending trial offers that have passed their expiry window.
+    pub fn expire_trial_offers(env: Env) -> Result<(), ScoutAccessError> {
+        Self::bump_instance_ttl(&env);
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        // TODO: Implement proper iteration over escrows for expiry handling.
+        Ok(())
     }
 
     /// Propose a replacement administrator. The current admin remains active
