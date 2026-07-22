@@ -1600,7 +1600,9 @@ proposal and does not immediately change the admin.
 #### `set_progress_contract(addr: Address) -> Result<(), ScoutAccessError>`
 
 Register the progress contract address so `log_trial_offer` can call
-`advance_level` cross-contract (admin only).
+`advance_level` cross-contract (admin only). Unlike
+`verification.set_progress_contract`, this has no first-call-only guard —
+it can always be re-invoked to re-wire the link.
 
 | | |
 |---|---|
@@ -1610,6 +1612,24 @@ Register the progress contract address so `log_trial_offer` can call
 ```bash
 stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
   -- set_progress_contract --addr $PROGRESS_CONTRACT_ID
+```
+
+---
+
+#### `update_progress_contract(addr: Address) -> Result<(), ScoutAccessError>`
+
+Alias for `set_progress_contract`, provided for naming consistency with
+`verification.update_progress_contract` so the same verb can be used to
+re-wire the progress contract link across contracts.
+
+| | |
+|---|---|
+| **Auth** | Admin must sign |
+| **Errors** | `NotInitialized` · `Unauthorized` |
+
+```bash
+stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
+  -- update_progress_contract --addr $NEW_PROGRESS_CONTRACT_ID
 ```
 
 ---

@@ -181,6 +181,10 @@ impl ScoutAccessContract {
 
     /// Register the progress contract address so log_trial_offer can
     /// atomically advance the player to Level 3 (admin only).
+    ///
+    /// Unlike `verification.set_progress_contract`, this has no
+    /// first-call-only guard: it can always be re-invoked to re-wire the
+    /// link.
     pub fn set_progress_contract(env: Env, addr: Address) -> Result<(), ScoutAccessError> {
         Self::bump_instance_ttl(&env);
         require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
@@ -189,6 +193,13 @@ impl ScoutAccessContract {
             .set(&DataKey::ProgressContract, &addr);
         events::progress_contract_updated(&env, &addr);
         Ok(())
+    }
+
+    /// Alias for `set_progress_contract`, kept for naming consistency with
+    /// `verification.update_progress_contract` — operators re-wiring after
+    /// the initial deployment can use the same verb across contracts.
+    pub fn update_progress_contract(env: Env, addr: Address) -> Result<(), ScoutAccessError> {
+        Self::set_progress_contract(env, addr)
     }
 
     /// Emergency refund: admin returns `amount` XLM (stroops) from the
@@ -2720,6 +2731,25 @@ mod tests {
                 )
             ]
         );
+    }
+
+    #[test]
+    fn test_update_progress_contract_is_alias_for_set() {
+        let (env, _admin, _xlm, contract_id, client) = setup();
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+
+        client.set_progress_contract(&first);
+        client.update_progress_contract(&second);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get::<DataKey, Address>(&DataKey::ProgressContract),
+                Some(second)
+            );
+        });
     }
 
     // -------------------------------------------------------------------------
