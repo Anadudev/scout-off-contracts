@@ -107,3 +107,4 @@ Expected output for each contract after a successful unpause:
 - [DEPLOYMENT.md](DEPLOYMENT.md) — contract deployment order and initialization
 - [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md) — full `pause_contract` / `unpause_contract` / `health` function reference
 - [GLOSSARY.md](GLOSSARY.md) — domain term definitions
+- [INDEXER.md](INDEXER.md) — reconciling the backend indexer's Postgres copy against on-chain state
