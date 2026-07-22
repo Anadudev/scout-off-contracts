@@ -367,7 +367,101 @@ impl VerificationContract {
 
         Ok(())
     }
+    /// Register multiple validators in a single atomic transaction (admin only).
+    ///
+    /// Applies the same validation logic as `register_validator` to each entry.
+    /// If any entry fails validation (duplicate wallet, credentials length out of bounds,
+    /// or the batch would exceed the validator cap), the entire batch fails and no state
+    /// changes are persisted.
+    pub fn batch_register_validators(
+        env: Env,
+        entries: Vec<(Address, String)>,
+    ) -> Result<(), VerificationError> {
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        Self::require_not_paused(&env)?;
 
+        // Preliminary cap check: ensure the batch won't push us over MAX_VALIDATORS.
+        let current_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveValidatorCount)
+            .unwrap_or(0u32);
+        let batch_len = entries.len() as u32;
+        if current_count
+            .checked_add(batch_len)
+            .ok_or(VerificationError::Overflow)?
+            > MAX_VALIDATORS
+        {
+            return Err(VerificationError::ValidatorCapReached);
+        }
+
+        // First pass: validate each entry without mutating state.
+        for i in 0..entries.len() {
+            let (wallet, credentials) = entries.get(i).unwrap();
+
+            // Length checks.
+            if credentials.len() > MAX_CREDENTIALS_LEN || credentials.len() < MIN_CREDENTIALS_LEN {
+                return Err(VerificationError::InvalidInput);
+            }
+
+            // Duplicate within the batch.
+            for j in 0..i {
+                let (other_wallet, _) = entries.get(j).unwrap();
+                if other_wallet == wallet {
+                    return Err(VerificationError::ValidatorAlreadyRegistered);
+                }
+            }
+
+            // Duplicate in existing registry.
+            if env
+                .storage()
+                .persistent()
+                .has(&DataKey::Validator(wallet.clone()))
+            {
+                return Err(VerificationError::ValidatorAlreadyRegistered);
+            }
+        }
+
+        // All validations passed – now persist the new validators.
+        let mut validator_vector: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ValidatorVector)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        for i in 0..entries.len() {
+            let (wallet, credentials) = entries.get(i).unwrap();
+            let validator = Validator {
+                wallet: wallet.clone(),
+                credentials: credentials.clone(),
+                registered_at: env.ledger().timestamp(),
+                active: true,
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::Validator(wallet.clone()), &validator);
+            validator_vector.push_back(wallet.clone());
+
+            // Increment active validator count.
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::ActiveValidatorCount)
+                .unwrap_or(0u32);
+            env.storage().instance().set(
+                &DataKey::ActiveValidatorCount,
+                &count.checked_add(1).ok_or(VerificationError::Overflow)?,
+            );
+
+            events::validator_registered(&env, &wallet, &validator.credentials);
+        }
+
+        // Persist updated vector.
+        env.storage()
+            .persistent()
+            .set(&DataKey::ValidatorVector, &validator_vector);
+        Ok(())
+    }
     /// Re-activate a previously revoked validator (admin only).
     ///
     /// Sets `validator.active = true` so the validator can approve milestones
