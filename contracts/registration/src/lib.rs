@@ -2135,6 +2135,41 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// `set_player_level` must only be callable by the address registered via
+    /// `set_progress_contract`. A random address attempting to authorize the
+    /// same call must be rejected, since `progress_contract.require_auth()`
+    /// only succeeds for an authorization entry matching the stored address.
+    #[test]
+    fn test_set_player_level_rejects_non_progress_contract_caller() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let wallet = Address::generate(&env);
+        let vitals = dummy_vitals(&env);
+        let hashes = vec![&env, String::from_str(&env, "QmTest")];
+        let player_id = client.register_player(&wallet, &vitals, &hashes);
+
+        let progress_contract = Address::generate(&env);
+        client.set_progress_contract(&progress_contract);
+
+        // A random address — not the registered progress contract — signs
+        // the authorization for this call instead.
+        let random_caller = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &random_caller,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "set_player_level",
+                args: (player_id, ProgressLevel::VerifiedIdentity).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        let result = client.try_set_player_level(&player_id, &ProgressLevel::VerifiedIdentity);
+        assert!(result.is_err());
+    }
+
     // -------------------------------------------------------------------------
     // Pause / unpause behaviour
     // -------------------------------------------------------------------------
