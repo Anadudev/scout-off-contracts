@@ -386,7 +386,7 @@ impl VerificationContract {
             .instance()
             .get(&DataKey::ActiveValidatorCount)
             .unwrap_or(0u32);
-        let batch_len = entries.len() as u32;
+        let batch_len = entries.len();
         if current_count
             .checked_add(batch_len)
             .ok_or(VerificationError::Overflow)?
@@ -1578,7 +1578,10 @@ mod tests {
     #[test]
     fn test_version() {
         let (env, client) = setup();
-        assert_eq!(client.version(), String::from_str(&env, env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            client.version(),
+            String::from_str(&env, env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]

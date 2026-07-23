@@ -58,11 +58,6 @@ pub fn trial_offer_expired(env: &Env, player_id: u64, scout: &Address, index: u3
     );
 }
 
-        (Symbol::new(env, "trial_offer_logged"), scout.clone()),
-        player_id,
-    );
-}
-
 pub fn fees_withdrawn(env: &Env, to: &Address, amount: i128) {
     env.events().publish(
         (Symbol::new(env, "fees_withdrawn"),),

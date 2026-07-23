@@ -2,9 +2,8 @@
 mod errors;
 mod events;
 mod types;
-
 use errors::ScoutAccessError;
-use types::{ContactRecord, DataKey, ProContactPeriod, Subscription, TrialOffer, FeeConfig, TrialEscrow};
+use types::{ContactRecord, DataKey, ProContactPeriod, Subscription, TrialEscrow, TrialOffer};
 pub use types::{FeeConfig, SubscriptionTier};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
@@ -811,9 +810,15 @@ impl ScoutAccessContract {
             // Refund escrow to scout
             let token_addr = Self::get_token(&env)?;
             let contract_addr = env.current_contract_address();
-            token::Client::new(&env, &token_addr).transfer(&contract_addr, &offer.scout, &escrow.amount);
+            token::Client::new(&env, &token_addr).transfer(
+                &contract_addr,
+                &offer.scout,
+                &escrow.amount,
+            );
             // Cleanup escrow
-            env.storage().persistent().remove(&DataKey::TrialEscrow(player_id, index));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::TrialEscrow(player_id, index));
             // Emit expiry event
             events::trial_offer_expired(&env, player_id, &offer.scout, index);
             return Err(ScoutAccessError::TrialOfferExpired);
@@ -825,12 +830,14 @@ impl ScoutAccessContract {
             .instance()
             .get(&DataKey::ProgressContract)
             .ok_or(ScoutAccessError::InvalidInput)?;
-        progress_contract::ProgressContractClient::new(&env, &progress_addr)
+        progress_contract::Client::new(&env, &progress_addr)
             .advance_level(&env, &env.current_contract_address(), player_id, index)
             .map_err(|_| ScoutAccessError::ProgressCallFailed)?;
 
         // Cleanup escrow after successful confirmation
-        env.storage().persistent().remove(&DataKey::TrialEscrow(player_id, index));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TrialEscrow(player_id, index));
         // Emit confirmed event
         events::trial_offer_confirmed(&env, player_id, &offer.scout, index);
         Ok(())
@@ -1439,7 +1446,10 @@ mod tests {
     #[test]
     fn test_version() {
         let (env, _, _, _, client) = setup();
-        assert_eq!(client.version(), String::from_str(&env, env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            client.version(),
+            String::from_str(&env, env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]

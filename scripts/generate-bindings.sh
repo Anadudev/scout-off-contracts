@@ -5,8 +5,8 @@
 set -euo pipefail
 
 # Pin the stellar-cli version to ensure reproducible bindings.
-# Update this constant and the CI install step together when upgrading.
-REQUIRED_STELLAR_CLI_VERSION="27.0.0"
+# Keep in sync with: docs/CONTRIBUTING.md and .github/workflows/contract-ci.yml
+REQUIRED_STELLAR_CLI_VERSION="25.2.0"
 
 actual_version=$(stellar --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
 if [[ "$actual_version" != "$REQUIRED_STELLAR_CLI_VERSION" ]]; then

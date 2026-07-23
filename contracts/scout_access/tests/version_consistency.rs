@@ -29,12 +29,24 @@ fn test_all_contracts_version_consistency() {
     let expected_ver = String::from_str(&env, env!("CARGO_PKG_VERSION"));
 
     // Assert all four contracts report the exact same version string
-    assert_eq!(reg_ver, ver_ver, "Registration and Verification contract versions differ");
-    assert_eq!(ver_ver, prog_ver, "Verification and Progress contract versions differ");
-    assert_eq!(prog_ver, sa_ver, "Progress and ScoutAccess contract versions differ");
+    assert_eq!(
+        reg_ver, ver_ver,
+        "Registration and Verification contract versions differ"
+    );
+    assert_eq!(
+        ver_ver, prog_ver,
+        "Verification and Progress contract versions differ"
+    );
+    assert_eq!(
+        prog_ver, sa_ver,
+        "Progress and ScoutAccess contract versions differ"
+    );
 
     // Assert each contract matches the workspace Cargo.toml version
-    assert_eq!(reg_ver, expected_ver, "Contract version does not match workspace CARGO_PKG_VERSION");
+    assert_eq!(
+        reg_ver, expected_ver,
+        "Contract version does not match workspace CARGO_PKG_VERSION"
+    );
 
     // Assert non-empty
     assert!(reg_ver.len() > 0, "Contract version string is empty");

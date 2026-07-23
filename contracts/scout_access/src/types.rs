@@ -124,4 +124,5 @@ pub enum DataKey {
     /// scout → Vec<(player_id, trial_index)> of all trial offers sent
     ScoutTrialOffers(Address),
     /// (player_id, trial_index) → TrialEscrow (holds escrow amount & expiry)
-    TrialEscrow(u64, u32),}
+    TrialEscrow(u64, u32),
+}
