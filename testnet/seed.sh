@@ -2,6 +2,13 @@
 # ScoutChain — seed testnet with demo data.
 # Run after initialize.sh to create test players, validators, and scouts.
 #
+# Minimum Funded Balance:
+# Each seeded account requires a minimum balance of ~15 XLM to cover Stellar
+# base reserves (~1-2 XLM), contract invocation gas fees (~0.01 XLM),
+# subscription purchases (up to 7 XLM for Elite tier), and pay-to-contact
+# fees (0.1 XLM per contact). Friendbot's standard testnet funding of 10,000 XLM
+# per account is comfortably sufficient for the full demo flow.
+#
 # Idempotent: stellar keys generate is skipped if the named key already exists.
 # Exits non-zero immediately if any step fails (set -euo pipefail).
 set -euo pipefail

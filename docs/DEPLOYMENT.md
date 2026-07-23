@@ -2,6 +2,9 @@
 
 ## Prerequisites
 
+<!-- Note: XLM token address source of truth -->
+> **Note:** The `xlm_token_address` values in `config/mainnet.json` and `config/testnet.json` (and the corresponding entry in `.env.example`) are sourced from Stellar's official SAC registry. The team member responsible for verifying and updating these addresses before each deployment is the **Release Engineer**. Ensure the addresses match the latest SAC documentation before deploying.
+
 - Rust + `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
 - Stellar CLI: https://developers.stellar.org/docs/tools/developer-tools/cli/install-stellar-cli
 - A funded Stellar keypair for deployment
@@ -17,10 +20,13 @@ missing contract ID error.
    originate here. No dependency on any other contract.
 
 2. **`verification`** — Deployed second because `approve_milestone` must
-   cross-call `progress.advance_level`. The progress contract address is wired
-   in by `initialize.sh` *after* both are deployed; deploying verification
-   before registration is safe but deploying it after progress and skipping
-   registration will break the milestone flow at runtime.
+   cross‑call `progress.advance_level`. The progress contract address is wired
+   in by `initialize.sh` *after* both verification and registration are deployed.
+
+   **Deployment order guidance:**
+
+   - ✅ *Safe*: Deploy `verification` **before** `registration`.
+   - ❌ *Breaks milestone flow*: Deploy `verification` **after** `progress` **and** skip deploying `registration`.
 
 3. **`progress`** — Deployed third. Holds the four-tier level state machine.
    Receives calls only from the verification contract (production) or directly
@@ -45,6 +51,36 @@ missing contract ID error.
 `deploy.sh` respects this order automatically. If you are deploying manually,
 follow the numbered sequence above and write each contract ID to `.env.contracts`
 before proceeding to the next contract.
+
+### Re-wiring the progress contract link (verification)
+
+`verification.set_progress_contract` is a **first-time-only** setter: it
+returns `AlreadyConfigured` on every call after the first, so the wrong
+address is never silently overwritten. If you need to point `verification`
+at a different progress contract — a redeploy, a bad address on the first
+run, or an `initialize.sh` re-run — call **`update_progress_contract`**
+instead:
+
+```bash
+stellar contract invoke \
+  --id $VERIFICATION_CONTRACT_ID \
+  --source $ADMIN_ADDRESS --network testnet \
+  -- update_progress_contract \
+  --progress_contract $NEW_PROGRESS_CONTRACT_ID
+```
+
+Both functions emit `progress_contract_updated` with the new address, so
+off-chain indexers see the change either way.
+
+`registration.set_progress_contract` and `scout_access.set_progress_contract`
+have no such guard — they can always be re-invoked to re-wire the link, and
+`scout_access` also exposes `update_progress_contract` as an alias for the
+same call so the same verb works across contracts.
+
+`./scripts/initialize.sh` is idempotent with respect to this link: if
+`set_progress_contract` on `verification` fails with `AlreadyConfigured`
+(e.g. because the script is being re-run), it automatically falls back to
+`update_progress_contract` instead of aborting.
 
 ---
 
@@ -191,12 +227,15 @@ stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
   -- set_progress_contract --addr $PROGRESS_CONTRACT_ID
 ```
 
-For `verification`, re-wire the progress contract link:
+For `verification`, re-wire the progress contract link. Instance storage
+(including the `ProgressContractSet` guard flag) survives an `upgrade()`
+call, so `set_progress_contract` will fail with `AlreadyConfigured` here —
+use `update_progress_contract` instead:
 
 ```bash
 stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
   --source $ADMIN_ADDRESS --network testnet \
-  -- set_progress_contract \
+  -- update_progress_contract \
   --progress_contract $PROGRESS_CONTRACT_ID
 ```
 
@@ -222,16 +261,61 @@ stellar contract invoke --id $PROGRESS_CONTRACT_ID \
 
 If a bug cannot be fixed via `upgrade()` (e.g. the storage layout must change in a way that requires a fresh deploy), you must migrate to a new contract address. This is a breaking change — all clients and the off-chain indexer must be updated.
 
+This is the highest-risk operation in the deployment lifecycle, so most of it is
+now automated by **`scripts/migrate-contract.sh`**, an orchestrator that chains
+the existing scripts in the order below with a `--dry-run` preview and an
+interactive confirmation gate before every state-mutating step. Run a dry run
+first:
+
+```bash
+# Preview every action without executing anything:
+./scripts/migrate-contract.sh testnet --dry-run
+
+# Then run for real (prompts y/N before each mutating step):
+./scripts/migrate-contract.sh testnet
+# ...or non-interactively (CI/automation): add --yes
+```
+
+`migrate-contract.sh` performs steps 1–5 below; steps 6–8 remain manual. It also
+requires `DEPLOYER_SECRET` / `ADMIN_ADDRESS` / `XLM_TOKEN_ADDRESS` (same as
+`deploy.sh` / `initialize.sh`).
+
 Migration procedure:
 
-1. Deploy the new contract: `./scripts/deploy.sh testnet` (or deploy just the affected contract manually).
-2. Initialize the new contract: `./scripts/initialize.sh testnet`.
-3. Pause the old contract so no new state is written: `stellar contract invoke --id $OLD_ID -- pause_contract`.
-4. Replay any off-chain events against the new contract to seed initial state (use the backend indexer's event log).
-5. Update `.env.contracts` with the new contract ID.
-6. Regenerate TypeScript bindings: `./scripts/generate-bindings.sh testnet`.
-7. Deploy the updated backend and frontend with the new contract ID.
-8. Announce the migration in release notes with the old and new contract IDs.
+1. **Deploy the new contract set** — `migrate-contract.sh` calls `./scripts/deploy.sh testnet` (which also snapshots the old IDs to `.env.contracts.snapshot`).
+2. **Initialize + wire the new set** — via `./scripts/initialize.sh testnet`.
+3. **Pause the old contracts** so no new state is written to the retired addresses — `migrate-contract.sh` invokes `pause_contract` on each old contract ID (equivalent to `stellar contract invoke --id $OLD_ID -- pause_contract`).
+4. **Replay state onto the new set** — via `./scripts/replay-state.sh testnet` (also invoked automatically by the orchestrator). See the important limitation below.
+5. **Health-check the new set** — via `./scripts/health-check.sh testnet`. At this point `.env.contracts` already points at the new IDs.
+6. **Regenerate TypeScript bindings** (manual): `./scripts/generate-bindings.sh testnet`.
+7. **Redeploy the backend and frontend** (manual) with the new contract IDs.
+8. **Announce the migration** (manual) in release notes with the old and new contract IDs.
+
+#### Step 4 in detail — what can and cannot be replayed
+
+`scripts/replay-state.sh` reads state from the old contracts and writes what it
+legitimately can to the new ones. **It is not a full automatic migration**, because
+of an authorization asymmetry between the two data categories:
+
+- **Validators — replayed automatically.** `verification.register_validator(wallet, credentials)` is **admin-only** (`require_admin`, no wallet self-auth). The operator holds the admin key, so the script reads every active validator via `get_validators()` + `get_validator()` on the old contract and re-registers each one on the new contract, signed by `DEPLOYER_SECRET`. No user action required.
+- **Players and scouts — CANNOT be replayed automatically.** `registration.register_player(wallet, vitals, ipfs_hashes)` and `registration.register_scout(wallet, region)` both call `wallet.require_auth()` — they require the **player's / scout's own signature**, not the admin's. An operator does not hold those private keys and therefore cannot submit a valid registration transaction on their behalf. The script still **exports** all player and scout data (via `get_player_count()`/`get_player(id)` and `get_scout_count()`/`get_scout(id)`) to timestamped JSON files under `migration-export/` so nothing is lost, but the re-seeding on the new contract must happen by one of:
+  - **(a)** each player / scout re-registering themselves against the new contract ID (self-service), or
+  - **(b)** the team adding a dedicated **admin-only seeding entrypoint** to the registration contract (e.g. an `admin_seed_player`). This is a **documented follow-up**, out of scope for the current tooling.
+
+  > Note on levels: the registration contract does **not** store a player's level — the progress contract is the source of truth (`resolve_level` / `set_player_level`). The exported `PlayerProfile` already carries the `level` field resolved from the old progress contract, so it is captured in the export for whichever re-seeding path is chosen.
+
+#### Testing a migration against the local sandbox
+
+`scripts/migrate-contract-smoke-test.sh` exercises the whole path
+(deploy old → seed a validator + a player → migrate → replay → **before/after
+comparison**) against a local Soroban sandbox, using the same
+`stellar/quickstart:testing` container as the `bindings-smoke-test` CI job. It
+requires `docker` + the `stellar` CLI and is intended as a manual command (it
+skips cleanly if those are unavailable):
+
+```bash
+./scripts/migrate-contract-smoke-test.sh
+```
 
 ### What survives an upgrade
 
@@ -253,7 +337,13 @@ Migration procedure:
 ## Common Mistakes
 
 **Milestones approved but player levels don't advance**
-You skipped the cross-contract wiring step. `approve_milestone` calls `advance_level` on the progress contract, but only if all links have been set. Fix it by running:
+You skipped the cross-contract wiring step. `approve_milestone` calls `advance_level` on the progress contract, but only if all links have been set. Run the wiring diagnostic first to identify which links are missing:
+
+```bash
+./scripts/verify-cross-contract-wiring.sh testnet
+```
+
+This prints a ✅/❌ table for all five wiring links in one command. If any link shows ❌, fix it by running:
 
 ```bash
 ./scripts/initialize.sh testnet

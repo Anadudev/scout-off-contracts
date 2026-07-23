@@ -5,10 +5,16 @@ mod types;
 
 use errors::ScoutChainError;
 use types::{
-    ContractHealth, DataKey, FilterResult, PlayerProfile, PlayerSummary, PlayerVitals,
-    ProgressLevel, ScoutProfile, StoredPlayerProfile,
+    ContractHealth, DataKey, FilterResult, PlayerProfile, PlayerSummary, ProgressLevel,
+    ScoutProfile, StoredPlayerProfile,
 };
+// `PlayerVitals` is an *input* type of the public `register_player` function, so
+// it must be nameable by external callers (integration tests, generated
+// clients). Re-export it at the crate root; this also brings it into local
+// scope for the rest of this module.
+pub use types::PlayerVitals;
 
+use scoutchain_shared_types::require_admin;
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
 // Generated client stub for the progress contract — used to resolve a player's
@@ -85,14 +91,60 @@ impl RegistrationContract {
         Ok(())
     }
 
+    /// Propose a replacement administrator. The current admin remains active
+    /// until the proposed address calls `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ScoutChainError> {
+        let old_admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PendingAdmin,
+            ADMIN_BUMP_LEDGERS,
+            ADMIN_BUMP_LEDGERS,
+        );
+        events::admin_transfer_proposed(&env, &old_admin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer. Only the proposed address can accept.
+    pub fn accept_admin(env: Env) -> Result<(), ScoutChainError> {
+        let old_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(ScoutChainError::NotInitialized)?;
+        let new_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ScoutChainError::PendingAdminNotSet)?;
+        new_admin.require_auth();
+        env.storage().persistent().set(&DataKey::Admin, &new_admin);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Admin,
+            ADMIN_BUMP_LEDGERS,
+            ADMIN_BUMP_LEDGERS,
+        );
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
+        events::admin_transferred(&env, &old_admin, &new_admin);
+        Ok(())
+    }
+
+    /// Deprecated alias for `propose_admin`; this no longer transfers control
+    /// immediately. The proposed address must still call `accept_admin`.
+    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), ScoutChainError> {
+        Self::propose_admin(env, new_admin)
+    }
+
     pub fn pause_contract(env: Env) -> Result<(), ScoutChainError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage().instance().set(&DataKey::Paused, &true);
         Ok(())
     }
 
     pub fn unpause_contract(env: Env) -> Result<(), ScoutChainError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage().instance().set(&DataKey::Paused, &false);
         Ok(())
     }
@@ -103,7 +155,7 @@ impl RegistrationContract {
         env: Env,
         new_wasm_hash: soroban_sdk::BytesN<32>,
     ) -> Result<(), ScoutChainError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
     }
@@ -111,7 +163,7 @@ impl RegistrationContract {
     /// Store the progress contract address so filter_players can resolve
     /// levels at query time (admin only).
     pub fn set_progress_contract(env: Env, addr: Address) -> Result<(), ScoutChainError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage()
             .instance()
             .set(&DataKey::ProgressContract, &addr);
@@ -277,7 +329,7 @@ impl RegistrationContract {
 
     /// Deregister a player profile (admin only, GDPR right-to-erasure).
     pub fn deregister_player(env: Env, player_id: u64) -> Result<(), ScoutChainError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         let profile = Self::load_stored_player(&env, player_id)?;
         // Resolve level before removing storage keys (progress contract is source of truth)
         let level = Self::resolve_level(&env, player_id);
@@ -314,12 +366,13 @@ impl RegistrationContract {
     /// to skip this player. The on-chain profile, progress history, and all
     /// milestone data are fully preserved and still accessible via `get_player`.
     pub fn deactivate_player(env: Env, player_id: u64) -> Result<(), ScoutChainError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         // Ensure the player actually exists before setting the flag.
         Self::load_stored_player(&env, player_id)?;
         env.storage()
             .persistent()
             .set(&DataKey::PlayerDeactivated(player_id), &true);
+        events::player_deactivated(&env, player_id);
         Ok(())
     }
 
@@ -328,12 +381,13 @@ impl RegistrationContract {
     /// Clears the `PlayerDeactivated(player_id)` flag, making the player
     /// visible in `filter_players` results again.
     pub fn reactivate_player(env: Env, player_id: u64) -> Result<(), ScoutChainError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         // Ensure the player actually exists.
         Self::load_stored_player(&env, player_id)?;
         env.storage()
             .persistent()
             .remove(&DataKey::PlayerDeactivated(player_id));
+        events::player_reactivated(&env, player_id);
         Ok(())
     }
 
@@ -448,7 +502,7 @@ impl RegistrationContract {
 
     /// Verify a scout profile (admin only).
     pub fn verify_scout(env: Env, scout_id: u64) -> Result<(), ScoutChainError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         let mut profile: ScoutProfile = env
             .storage()
             .persistent()
@@ -668,21 +722,6 @@ impl RegistrationContract {
         Ok(())
     }
 
-    fn require_admin(env: &Env) -> Result<(), ScoutChainError> {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(ScoutChainError::NotInitialized)?;
-        admin.require_auth();
-        env.storage().persistent().extend_ttl(
-            &DataKey::Admin,
-            ADMIN_BUMP_LEDGERS,
-            ADMIN_BUMP_LEDGERS,
-        );
-        Ok(())
-    }
-
     fn load_stored_player(
         env: &Env,
         player_id: u64,
@@ -853,7 +892,10 @@ impl RegistrationContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, vec, Env, String};
+    use soroban_sdk::{
+        testutils::{Address as _, Events, MockAuth, MockAuthInvoke},
+        vec, Env, IntoVal, String, Symbol,
+    };
 
     fn setup() -> (Env, RegistrationContractClient<'static>) {
         let env = Env::default();
@@ -881,9 +923,143 @@ mod tests {
     }
 
     #[test]
+    fn test_admin_transfer_propose_replace_and_accept() {
+        let (env, client) = setup();
+        let old_admin = Address::generate(&env);
+        let stale_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&old_admin);
+
+        client.propose_admin(&stale_admin);
+        assert_eq!(
+            env.events().all(),
+            vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (Symbol::new(&env, events::ADMIN_TRANSFER_PROPOSED),).into_val(&env),
+                    (old_admin.clone(), stale_admin).into_val(&env),
+                )
+            ]
+        );
+
+        // The current admin remains fully functional while a proposal is pending.
+        client.pause_contract();
+        client.unpause_contract();
+
+        // A new proposal replaces the stale pending address.
+        client.propose_admin(&new_admin);
+        env.as_contract(&client.address, || {
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::Admin),
+                Some(old_admin.clone())
+            );
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::PendingAdmin),
+                Some(new_admin.clone())
+            );
+        });
+
+        env.mock_auths(&[MockAuth {
+            address: &new_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_admin",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.accept_admin();
+        assert_eq!(
+            env.events().all(),
+            vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (Symbol::new(&env, events::ADMIN_TRANSFERRED),).into_val(&env),
+                    (old_admin, new_admin.clone()).into_val(&env),
+                )
+            ]
+        );
+        env.as_contract(&client.address, || {
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::Admin),
+                Some(new_admin)
+            );
+            assert!(!env.storage().persistent().has(&DataKey::PendingAdmin));
+        });
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_old_admin_loses_access_after_transfer() {
+        let (env, client) = setup();
+        let old_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&old_admin);
+
+        client.propose_admin(&new_admin);
+        env.mock_auths(&[MockAuth {
+            address: &new_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_admin",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.accept_admin();
+
+        // Privileged calls now require new_admin's signature. Restricting
+        // the mocked auth to old_admin must make the call fail, proving the
+        // old admin no longer has effective access.
+        env.mock_auths(&[MockAuth {
+            address: &old_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "pause_contract",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.pause_contract();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_third_party_cannot_accept_admin() {
+        let (env, client) = setup();
+        let old_admin = Address::generate(&env);
+        let pending_admin = Address::generate(&env);
+        let third_party = Address::generate(&env);
+        client.initialize(&old_admin);
+        client.propose_admin(&pending_admin);
+
+        env.mock_auths(&[MockAuth {
+            address: &third_party,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_admin",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.accept_admin();
+    }
+
+    #[test]
     fn test_version() {
         let (env, client) = setup();
-        assert_eq!(client.version(), String::from_str(&env, "0.1.0"));
+        assert_eq!(
+            client.version(),
+            String::from_str(&env, env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]
@@ -1849,6 +2025,74 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // Issue #647: player_deactivated and player_reactivated event emission
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_deactivate_player_emits_event() {
+        use soroban_sdk::testutils::Events;
+        use soroban_sdk::IntoVal;
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let wallet = Address::generate(&env);
+        let hashes = vec![&env, String::from_str(&env, "QmTest")];
+        let player_id = client.register_player(&wallet, &dummy_vitals(&env), &hashes);
+
+        // Clear any events from registration so we only inspect deactivation events.
+        let _ = env.events().all();
+
+        client.deactivate_player(&player_id);
+
+        let events = env.events().all();
+        assert_eq!(
+            events,
+            soroban_sdk::vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (soroban_sdk::Symbol::new(&env, "player_deactivated"),).into_val(&env),
+                    player_id.into_val(&env)
+                )
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reactivate_player_emits_event() {
+        use soroban_sdk::testutils::Events;
+        use soroban_sdk::IntoVal;
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let wallet = Address::generate(&env);
+        let hashes = vec![&env, String::from_str(&env, "QmTest")];
+        let player_id = client.register_player(&wallet, &dummy_vitals(&env), &hashes);
+
+        client.deactivate_player(&player_id);
+
+        // Clear events up to this point.
+        let _ = env.events().all();
+
+        client.reactivate_player(&player_id);
+
+        let events = env.events().all();
+        assert_eq!(
+            events,
+            soroban_sdk::vec![
+                &env,
+                (
+                    client.address.clone(),
+                    (soroban_sdk::Symbol::new(&env, "player_reactivated"),).into_val(&env),
+                    player_id.into_val(&env)
+                )
+            ]
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // Issue #32: Scout verified flag and verify_scout admin function
     // -------------------------------------------------------------------------
 
@@ -1931,6 +2175,41 @@ mod tests {
         // Clear all auths so admin check fails
         env.mock_auths(&[]);
         let result = client.try_verify_scout(&scout_id);
+        assert!(result.is_err());
+    }
+
+    /// `set_player_level` must only be callable by the address registered via
+    /// `set_progress_contract`. A random address attempting to authorize the
+    /// same call must be rejected, since `progress_contract.require_auth()`
+    /// only succeeds for an authorization entry matching the stored address.
+    #[test]
+    fn test_set_player_level_rejects_non_progress_contract_caller() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let wallet = Address::generate(&env);
+        let vitals = dummy_vitals(&env);
+        let hashes = vec![&env, String::from_str(&env, "QmTest")];
+        let player_id = client.register_player(&wallet, &vitals, &hashes);
+
+        let progress_contract = Address::generate(&env);
+        client.set_progress_contract(&progress_contract);
+
+        // A random address — not the registered progress contract — signs
+        // the authorization for this call instead.
+        let random_caller = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &random_caller,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "set_player_level",
+                args: (player_id, ProgressLevel::VerifiedIdentity).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        let result = client.try_set_player_level(&player_id, &ProgressLevel::VerifiedIdentity);
         assert!(result.is_err());
     }
 

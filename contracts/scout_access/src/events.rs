@@ -6,8 +6,11 @@ pub const CONTRACT_INITIALIZED: &str = "contract_initialized";
 pub const SCOUT_SUBSCRIBED: &str = "scout_subscribed";
 pub const PLAYER_CONTACTED: &str = "player_contacted";
 pub const TRIAL_OFFER_LOGGED: &str = "trial_offer_logged";
+pub const TRIAL_OFFER_CONFIRMED: &str = "trial_offer_confirmed";
+pub const TRIAL_OFFER_EXPIRED: &str = "trial_offer_expired";
 pub const FEES_WITHDRAWN: &str = "fees_withdrawn";
 pub const ADMIN_TRANSFERRED: &str = "admin_transferred";
+pub const ADMIN_TRANSFER_PROPOSED: &str = "admin_transfer_proposed";
 pub const CONTRACT_PAUSED: &str = "contract_paused";
 pub const CONTRACT_UNPAUSED: &str = "contract_unpaused";
 pub const SUBSCRIPTION_REFUNDED: &str = "subscription_refunded";
@@ -36,8 +39,22 @@ pub fn player_contacted(env: &Env, player_id: u64, scout: &Address, fee_paid: i1
 
 pub fn trial_offer_logged(env: &Env, player_id: u64, scout: &Address) {
     env.events().publish(
-        (Symbol::new(env, "trial_offer_logged"), scout.clone()),
+        (Symbol::new(env, TRIAL_OFFER_LOGGED), scout.clone()),
         player_id,
+    );
+}
+
+pub fn trial_offer_confirmed(env: &Env, player_id: u64, scout: &Address, index: u32) {
+    env.events().publish(
+        (Symbol::new(env, TRIAL_OFFER_CONFIRMED), scout.clone()),
+        (player_id, index),
+    );
+}
+
+pub fn trial_offer_expired(env: &Env, player_id: u64, scout: &Address, index: u32) {
+    env.events().publish(
+        (Symbol::new(env, TRIAL_OFFER_EXPIRED), scout.clone()),
+        (player_id, index),
     );
 }
 
@@ -56,6 +73,13 @@ pub fn admin_transferred(env: &Env, old_admin: &Address, new_admin: &Address) {
             new_admin.clone(),
         ),
         (),
+    );
+}
+
+pub fn admin_transfer_proposed(env: &Env, old_admin: &Address, new_admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, ADMIN_TRANSFER_PROPOSED),),
+        (old_admin.clone(), new_admin.clone()),
     );
 }
 

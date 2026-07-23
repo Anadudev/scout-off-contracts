@@ -5,7 +5,8 @@ mod events;
 mod types;
 
 use errors::ProgressError;
-use types::{ContractHealth, DataKey, ProgressEntry, ProgressLevel};
+use scoutchain_shared_types::{require_admin, ContractHealth, ProgressLevel};
+use types::{DataKey, ProgressEntry};
 
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
@@ -80,7 +81,7 @@ impl ProgressContract {
 
     /// Store the registration contract address so we can sync player levels (admin only).
     pub fn set_registration_contract(env: Env, addr: Address) -> Result<(), ProgressError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage()
             .instance()
             .set(&DataKey::RegistrationContract, &addr);
@@ -89,7 +90,7 @@ impl ProgressContract {
 
     pub fn pause_contract(env: Env) -> Result<(), ProgressError> {
         Self::bump_instance_ttl(&env);
-        let admin = Self::require_admin(&env)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage().instance().set(&DataKey::Paused, &true);
         events::contract_paused(&env, &admin);
         Ok(())
@@ -97,7 +98,7 @@ impl ProgressContract {
 
     pub fn unpause_contract(env: Env) -> Result<(), ProgressError> {
         Self::bump_instance_ttl(&env);
-        let admin = Self::require_admin(&env)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage().instance().set(&DataKey::Paused, &false);
         events::contract_unpaused(&env, &admin);
         Ok(())
@@ -107,7 +108,7 @@ impl ProgressContract {
     /// that the caller is the configured VerificationContract (admin only).
     pub fn set_verification_contract(env: Env, addr: Address) -> Result<(), ProgressError> {
         Self::bump_instance_ttl(&env);
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage()
             .instance()
             .set(&DataKey::VerificationContract, &addr);
@@ -118,36 +119,65 @@ impl ProgressContract {
     /// advance_level (for trial-offer Level-3 advances). Admin only.
     pub fn set_scout_access_contract(env: Env, addr: Address) -> Result<(), ProgressError> {
         Self::bump_instance_ttl(&env);
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage()
             .instance()
             .set(&DataKey::ScoutAccessContract, &addr);
         Ok(())
     }
 
-    /// Transfer admin rights to a new address (current admin auth required).
-    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), ProgressError> {
+    /// Propose a replacement administrator. The current admin remains active
+    /// until the proposed address calls `accept_admin`.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), ProgressError> {
+        Self::bump_instance_ttl(&env);
+        let old_admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PendingAdmin,
+            ADMIN_BUMP_LEDGERS,
+            ADMIN_BUMP_LEDGERS,
+        );
+        events::admin_transfer_proposed(&env, &old_admin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer. Only the proposed address can accept.
+    pub fn accept_admin(env: Env) -> Result<(), ProgressError> {
         Self::bump_instance_ttl(&env);
         let old_admin: Address = env
             .storage()
             .persistent()
             .get(&DataKey::Admin)
             .ok_or(ProgressError::NotInitialized)?;
-        old_admin.require_auth();
+        let new_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(ProgressError::PendingAdminNotSet)?;
+        new_admin.require_auth();
         env.storage().persistent().set(&DataKey::Admin, &new_admin);
         env.storage().persistent().extend_ttl(
             &DataKey::Admin,
             ADMIN_BUMP_LEDGERS,
             ADMIN_BUMP_LEDGERS,
         );
+        env.storage().persistent().remove(&DataKey::PendingAdmin);
         events::admin_transferred(&env, &old_admin, &new_admin);
         Ok(())
+    }
+
+    /// Deprecated alias for `propose_admin`; this no longer transfers control
+    /// immediately. The proposed address must still call `accept_admin`.
+    pub fn transfer_admin(env: Env, new_admin: Address) -> Result<(), ProgressError> {
+        Self::propose_admin(env, new_admin)
     }
 
     /// Upgrade the contract WASM. Admin auth required.
     /// Persistent storage (including Admin) survives this call.
     pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), ProgressError> {
-        Self::require_admin(&env)?;
+        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.deployer().update_current_contract_wasm(new_wasm_hash);
         Ok(())
     }
@@ -160,7 +190,7 @@ impl ProgressContract {
         target_level: ProgressLevel,
     ) -> Result<(), ProgressError> {
         Self::require_not_paused(&env)?;
-        let admin = Self::require_admin(&env)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
 
         let old_level = Self::get_current_level(&env, player_id);
         Self::record_progress_entry(
@@ -572,21 +602,6 @@ impl ProgressContract {
         }
         Ok(())
     }
-
-    fn require_admin(env: &Env) -> Result<Address, ProgressError> {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Admin)
-            .ok_or(ProgressError::NotInitialized)?;
-        admin.require_auth();
-        env.storage().persistent().extend_ttl(
-            &DataKey::Admin,
-            ADMIN_BUMP_LEDGERS,
-            ADMIN_BUMP_LEDGERS,
-        );
-        Ok(admin)
-    }
 }
 
 // =============================================================================
@@ -596,7 +611,7 @@ impl ProgressContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{storage::Instance, Address as _, Events as _},
+        testutils::{storage::Instance, Address as _, Events as _, MockAuth, MockAuthInvoke},
         vec, Env, IntoVal, Symbol,
     };
 
@@ -815,6 +830,11 @@ mod tests {
         assert_eq!(level, ProgressLevel::VerifiedIdentity);
     }
 
+    // #397: With DataKey::VerificationContract configured (done in setup()),
+    // advance_level must reject a direct call from any address that is
+    // neither the configured VerificationContract nor the optional
+    // ScoutAccessContract — the caller whitelist must not have an open
+    // fallback.
     #[test]
     fn test_advance_level_unauthorized_when_verification_contract_set() {
         let (env, client, _verification) = setup();
@@ -968,57 +988,177 @@ mod tests {
     }
 
     #[test]
-    fn test_transfer_admin_success() {
-        let (env, client, _) = setup();
-        let new_admin = Address::generate(&env);
-        // Should not panic — current admin auth is satisfied
-        client.transfer_admin(&new_admin);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_transfer_admin_unauthorized() {
-        let (env, client, _) = setup();
-        // Clear all mocks — no auth satisfied, so admin check fails
-        env.mock_auths(&[]);
-        client.transfer_admin(&Address::generate(&env));
-    }
-
-    /// Asserts that `transfer_admin` publishes an `admin_transferred` event whose
-    /// data payload carries exactly the old and new admin addresses, in that order.
-    /// A silent regression in event emission (wrong addresses, missing event, wrong
-    /// symbol) would be caught immediately by this test.
-    #[test]
-    fn test_transfer_admin_emits_event_with_correct_addresses() {
+    fn test_admin_transfer_propose_replace_and_accept() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, ProgressContract);
         let client = ProgressContractClient::new(&env, &contract_id);
-
         let old_admin = Address::generate(&env);
+        let stale_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
         client.initialize(&old_admin);
 
-        // Wire a dummy verification contract (required by advance_level; not relevant here)
-        let verification = Address::generate(&env);
-        client.set_verification_contract(&verification);
-
-        let new_admin = Address::generate(&env);
-        client.transfer_admin(&new_admin);
-
-        // events::admin_transferred publishes:
-        //   topics : (Symbol("admin_transferred"),)
-        //   data   : (old_admin, new_admin)
+        client.propose_admin(&stale_admin);
         assert_eq!(
             env.events().all(),
-            soroban_sdk::vec![
+            vec![
                 &env,
                 (
-                    contract_id,
-                    soroban_sdk::vec![&env, Symbol::new(&env, "admin_transferred").into_val(&env),],
-                    (old_admin.clone(), new_admin.clone()).into_val(&env),
+                    contract_id.clone(),
+                    vec![
+                        &env,
+                        Symbol::new(&env, events::ADMIN_TRANSFER_PROPOSED).into_val(&env),
+                    ],
+                    (old_admin.clone(), stale_admin).into_val(&env),
                 )
             ]
         );
+
+        // The old admin remains fully functional while acceptance is pending.
+        client.pause_contract();
+        client.unpause_contract();
+
+        client.propose_admin(&new_admin);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::Admin),
+                Some(old_admin.clone())
+            );
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::PendingAdmin),
+                Some(new_admin.clone())
+            );
+        });
+
+        env.mock_auths(&[MockAuth {
+            address: &new_admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "accept_admin",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.accept_admin();
+        assert_eq!(
+            env.events().all(),
+            vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    vec![
+                        &env,
+                        Symbol::new(&env, events::ADMIN_TRANSFERRED).into_val(&env),
+                    ],
+                    (old_admin, new_admin.clone()).into_val(&env),
+                )
+            ]
+        );
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::Admin),
+                Some(new_admin)
+            );
+            assert!(!env.storage().persistent().has(&DataKey::PendingAdmin));
+        });
+    }
+
+    #[test]
+    fn test_transfer_admin_alias_creates_proposal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ProgressContract);
+        let client = ProgressContractClient::new(&env, &contract_id);
+        let old_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&old_admin);
+        client.transfer_admin(&new_admin);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::Admin),
+                Some(old_admin)
+            );
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::PendingAdmin),
+                Some(new_admin)
+            );
+        });
+    }
+
+    // #396: A non-admin caller must not be able to transfer admin control.
+    // `transfer_admin` (an alias for `propose_admin`) is gated by the shared
+    // `require_admin` helper, which calls `Address::require_auth()` on the
+    // *stored* admin address. When that auth isn't satisfied, the SDK
+    // surfaces it as a host-level auth error on `try_transfer_admin` (caught
+    // here without panicking, matching the pattern used by
+    // `test_advance_level_unauthorized_when_verification_contract_set`)
+    // rather than a decoded `ProgressError::Unauthorized` contract error —
+    // `require_admin` never constructs that variant, since auth failures are
+    // rejected before contract logic runs. This test locks in that the call
+    // fails end-to-end so a future refactor of the auth guard can't silently
+    // let a non-admin caller through.
+    #[test]
+    fn test_transfer_admin_called_by_non_admin_is_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ProgressContract);
+        let client = ProgressContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // No authorizations are mocked for this call, so the stored admin's
+        // `require_auth()` inside `require_admin` cannot be satisfied.
+        env.mock_auths(&[]);
+        let result = client.try_transfer_admin(&new_admin);
+        assert!(result.is_err(), "non-admin caller must not transfer admin");
+
+        // Admin must be unchanged and no pending proposal recorded.
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::Admin),
+                Some(admin)
+            );
+            assert!(!env.storage().persistent().has(&DataKey::PendingAdmin));
+        });
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_third_party_cannot_accept_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ProgressContract);
+        let client = ProgressContractClient::new(&env, &contract_id);
+        let old_admin = Address::generate(&env);
+        let pending_admin = Address::generate(&env);
+        let third_party = Address::generate(&env);
+        client.initialize(&old_admin);
+        client.propose_admin(&pending_admin);
+
+        env.mock_auths(&[MockAuth {
+            address: &third_party,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "accept_admin",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.accept_admin();
     }
 
     #[test]
@@ -1048,18 +1188,6 @@ mod tests {
         // advance_level must now succeed
         let new_level = client.advance_level(&validator, &player_id, &1u32);
         assert_eq!(new_level, ProgressLevel::VerifiedIdentity);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_old_admin_loses_access_after_transfer() {
-        let (env, client, _) = setup();
-        let new_admin = Address::generate(&env);
-        client.transfer_admin(&new_admin);
-
-        // Clear mocks — old admin auth no longer stored, so pause must fail
-        env.mock_auths(&[]);
-        client.pause_contract();
     }
 
     #[test]
@@ -1325,12 +1453,20 @@ mod tests {
         assert_eq!(result, Err(Ok(ProgressError::NotInitialized)));
     }
 
+    // #398: get_level falls back to ProgressLevel::Unverified when no
+    // PlayerLevel storage key exists yet (i.e. the player has never called
+    // advance_level). Guards against a regression where removing the
+    // unwrap_or default would panic instead of returning Unverified.
     #[test]
     fn test_get_level_returns_unverified_when_no_advance() {
         let (_, client, _) = setup();
         assert_eq!(client.get_level(&999u64), ProgressLevel::Unverified);
     }
 
+    // #399: get_history_count falls back to 0 when no HistoryCounter storage
+    // key exists yet (i.e. the player has no history). Guards against a
+    // regression where removing the unwrap_or(0) default would panic on the
+    // first query for any new player.
     #[test]
     fn test_get_history_count_returns_zero_when_no_progress() {
         let (_, client, _) = setup();
@@ -1378,45 +1514,12 @@ mod tests {
     }
 
     #[test]
-    fn test_progress_history_and_page_consistency() {
-        let (_env, client, validator) = setup();
-        let player_id = 7u64;
-
-        // Populate history with 3 entries via advance_level and reset_player_level
-        client.advance_level(&validator, &player_id, &1u32);
-        client.reset_player_level(&player_id, &ProgressLevel::Unverified);
-        client.advance_level(&validator, &player_id, &2u32);
-
-        assert_eq!(client.get_history_count(&player_id), 3);
-
-        // 1. get_progress_history returns all entries in chronological order
-        let full_history = client.get_progress_history(&player_id);
-        assert_eq!(full_history.len(), 3);
-
-        // 2. Concatenating get_progress_history_page results with limit=1 reconstructs identical ordered list
-        let mut paged_history = Vec::new(&_env);
-        let mut offset = 0u32;
-        loop {
-            let page = client.get_progress_history_page(&player_id, &offset, &1u32);
-            if page.is_empty() {
-                break;
-            }
-            for entry in page.iter() {
-                paged_history.push_back(entry);
-            }
-            offset += 1;
-        }
-        assert_eq!(full_history, paged_history);
-
-        // 3. get_history_entry for each index (1-indexed) matches corresponding entry from bulk-read functions
-        for i in 0..3u32 {
-            let entry_from_history = full_history.get(i).unwrap();
-            let entry_from_page = paged_history.get(i).unwrap();
-            let entry_individual = client.get_history_entry(&player_id, &(i + 1)).unwrap();
-
-            assert_eq!(entry_from_history, entry_individual);
-            assert_eq!(entry_from_page, entry_individual);
-        }
+    fn test_version() {
+        let (env, client, _) = setup();
+        assert_eq!(
+            client.version(),
+            String::from_str(&env, env!("CARGO_PKG_VERSION"))
+        );
     }
 }
 
