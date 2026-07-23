@@ -62,7 +62,13 @@ The upgrade procedure is implemented in `scripts/upgrade.sh` (see [docs/DEPLOYME
 - [ ] Snapshot current on-chain state that lives in **instance** storage (fee config, initialized flag, contract links) — these survive the WASM swap but must be re-verified
 - [ ] Check `version()` on all four contracts to confirm the baseline version before upgrade
 - [ ] Run `cargo test --workspace` against the new code locally
-- [ ] Test the full upgrade flow on testnet before touching mainnet
+- [ ] Rehearse the upgrade locally with the storage-survival harness — **no testnet fees required.** For each contract it deploys v1, seeds representative state, calls `upgrade()`, and asserts every row of the "What survives an upgrade" table in `docs/DEPLOYMENT.md` (persistent state unchanged; instance `Initialized`/`Paused` flags intact; cross-contract links re-wirable), including the `verification` `AlreadyConfigured` re-wire quirk. Run:
+  - `cargo test -p scoutchain-registration  --test upgrade_rehearsal`
+  - `cargo test -p scoutchain-verification  --test upgrade_rehearsal`
+  - `cargo test -p scoutchain-progress      --test upgrade_rehearsal`
+  - `cargo test -p scoutchain-scout-access  --test upgrade_rehearsal`
+  - (or all at once: `cargo test --workspace --test upgrade_rehearsal`)
+- [ ] Test the full upgrade flow on testnet before touching mainnet (only after the local rehearsal above passes, so testnet transaction fees are spent on a flow you already know survives an upgrade)
 
 ### During upgrade (per contract)
 

@@ -830,6 +830,11 @@ mod tests {
         assert_eq!(level, ProgressLevel::VerifiedIdentity);
     }
 
+    // #397: With DataKey::VerificationContract configured (done in setup()),
+    // advance_level must reject a direct call from any address that is
+    // neither the configured VerificationContract nor the optional
+    // ScoutAccessContract — the caller whitelist must not have an open
+    // fallback.
     #[test]
     fn test_advance_level_unauthorized_when_verification_contract_set() {
         let (env, client, _verification) = setup();
@@ -1088,6 +1093,46 @@ mod tests {
                     .get::<DataKey, Address>(&DataKey::PendingAdmin),
                 Some(new_admin)
             );
+        });
+    }
+
+    // #396: A non-admin caller must not be able to transfer admin control.
+    // `transfer_admin` (an alias for `propose_admin`) is gated by the shared
+    // `require_admin` helper, which calls `Address::require_auth()` on the
+    // *stored* admin address. When that auth isn't satisfied, the SDK
+    // surfaces it as a host-level auth error on `try_transfer_admin` (caught
+    // here without panicking, matching the pattern used by
+    // `test_advance_level_unauthorized_when_verification_contract_set`)
+    // rather than a decoded `ProgressError::Unauthorized` contract error —
+    // `require_admin` never constructs that variant, since auth failures are
+    // rejected before contract logic runs. This test locks in that the call
+    // fails end-to-end so a future refactor of the auth guard can't silently
+    // let a non-admin caller through.
+    #[test]
+    fn test_transfer_admin_called_by_non_admin_is_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ProgressContract);
+        let client = ProgressContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // No authorizations are mocked for this call, so the stored admin's
+        // `require_auth()` inside `require_admin` cannot be satisfied.
+        env.mock_auths(&[]);
+        let result = client.try_transfer_admin(&new_admin);
+        assert!(result.is_err(), "non-admin caller must not transfer admin");
+
+        // Admin must be unchanged and no pending proposal recorded.
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, Address>(&DataKey::Admin),
+                Some(admin)
+            );
+            assert!(!env.storage().persistent().has(&DataKey::PendingAdmin));
         });
     }
 
@@ -1408,12 +1453,20 @@ mod tests {
         assert_eq!(result, Err(Ok(ProgressError::NotInitialized)));
     }
 
+    // #398: get_level falls back to ProgressLevel::Unverified when no
+    // PlayerLevel storage key exists yet (i.e. the player has never called
+    // advance_level). Guards against a regression where removing the
+    // unwrap_or default would panic instead of returning Unverified.
     #[test]
     fn test_get_level_returns_unverified_when_no_advance() {
         let (_, client, _) = setup();
         assert_eq!(client.get_level(&999u64), ProgressLevel::Unverified);
     }
 
+    // #399: get_history_count falls back to 0 when no HistoryCounter storage
+    // key exists yet (i.e. the player has no history). Guards against a
+    // regression where removing the unwrap_or(0) default would panic on the
+    // first query for any new player.
     #[test]
     fn test_get_history_count_returns_zero_when_no_progress() {
         let (_, client, _) = setup();

@@ -5,13 +5,14 @@ mod types;
 
 use errors::ScoutChainError;
 use types::{
-    ContractHealth, DataKey, PlayerSummary, ProgressLevel, ScoutProfile, StoredPlayerProfile,
+    ContractHealth, DataKey, FilterResult, PlayerProfile, PlayerSummary, ProgressLevel,
+    ScoutProfile, StoredPlayerProfile,
 };
-// Re-exported so external integration/benchmark tests (e.g.
-// tests/cost_budget.rs) can construct register_player's `vitals` argument
-// and read filter_players / get_player results — mirrors scout_access's
-// `pub use types::{FeeConfig, ...}`.
-pub use types::{FilterResult, PlayerProfile, PlayerVitals};
+// `PlayerVitals` is an *input* type of the public `register_player` function, so
+// it must be nameable by external callers (integration tests, generated
+// clients). Re-export it at the crate root; this also brings it into local
+// scope for the rest of this module.
+pub use types::PlayerVitals;
 
 use scoutchain_shared_types::require_admin;
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
