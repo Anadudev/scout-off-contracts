@@ -1408,6 +1408,10 @@ mod tests {
         assert_eq!(result, Err(Ok(ProgressError::NotInitialized)));
     }
 
+    // #398: get_level falls back to ProgressLevel::Unverified when no
+    // PlayerLevel storage key exists yet (i.e. the player has never called
+    // advance_level). Guards against a regression where removing the
+    // unwrap_or default would panic instead of returning Unverified.
     #[test]
     fn test_get_level_returns_unverified_when_no_advance() {
         let (_, client, _) = setup();
