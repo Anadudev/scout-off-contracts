@@ -1091,6 +1091,52 @@ mod tests {
         });
     }
 
+    // #395: `transfer_admin` is a deprecated alias for `propose_admin` — it
+    // does not transfer control immediately, so the `admin_transferred`
+    // event is only emitted once the proposed address calls `accept_admin`.
+    // This test drives the whole flow through the `transfer_admin` entry
+    // point (rather than `propose_admin` directly) and asserts that the
+    // resulting `admin_transferred` event carries the correct old and new
+    // admin addresses.
+    #[test]
+    fn test_transfer_admin_emits_admin_transferred_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ProgressContract);
+        let client = ProgressContractClient::new(&env, &contract_id);
+        let old_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&old_admin);
+
+        client.transfer_admin(&new_admin);
+
+        env.mock_auths(&[MockAuth {
+            address: &new_admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "accept_admin",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.accept_admin();
+
+        assert_eq!(
+            env.events().all(),
+            vec![
+                &env,
+                (
+                    contract_id,
+                    vec![
+                        &env,
+                        Symbol::new(&env, events::ADMIN_TRANSFERRED).into_val(&env),
+                    ],
+                    (old_admin, new_admin).into_val(&env),
+                )
+            ]
+        );
+    }
+
     #[test]
     #[should_panic]
     fn test_third_party_cannot_accept_admin() {
