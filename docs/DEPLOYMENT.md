@@ -52,6 +52,36 @@ missing contract ID error.
 follow the numbered sequence above and write each contract ID to `.env.contracts`
 before proceeding to the next contract.
 
+### Re-wiring the progress contract link (verification)
+
+`verification.set_progress_contract` is a **first-time-only** setter: it
+returns `AlreadyConfigured` on every call after the first, so the wrong
+address is never silently overwritten. If you need to point `verification`
+at a different progress contract — a redeploy, a bad address on the first
+run, or an `initialize.sh` re-run — call **`update_progress_contract`**
+instead:
+
+```bash
+stellar contract invoke \
+  --id $VERIFICATION_CONTRACT_ID \
+  --source $ADMIN_ADDRESS --network testnet \
+  -- update_progress_contract \
+  --progress_contract $NEW_PROGRESS_CONTRACT_ID
+```
+
+Both functions emit `progress_contract_updated` with the new address, so
+off-chain indexers see the change either way.
+
+`registration.set_progress_contract` and `scout_access.set_progress_contract`
+have no such guard — they can always be re-invoked to re-wire the link, and
+`scout_access` also exposes `update_progress_contract` as an alias for the
+same call so the same verb works across contracts.
+
+`./scripts/initialize.sh` is idempotent with respect to this link: if
+`set_progress_contract` on `verification` fails with `AlreadyConfigured`
+(e.g. because the script is being re-run), it automatically falls back to
+`update_progress_contract` instead of aborting.
+
 ---
 
 ## Step-by-step
@@ -197,12 +227,15 @@ stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
   -- set_progress_contract --addr $PROGRESS_CONTRACT_ID
 ```
 
-For `verification`, re-wire the progress contract link:
+For `verification`, re-wire the progress contract link. Instance storage
+(including the `ProgressContractSet` guard flag) survives an `upgrade()`
+call, so `set_progress_contract` will fail with `AlreadyConfigured` here —
+use `update_progress_contract` instead:
 
 ```bash
 stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
   --source $ADMIN_ADDRESS --network testnet \
-  -- set_progress_contract \
+  -- update_progress_contract \
   --progress_contract $PROGRESS_CONTRACT_ID
 ```
 

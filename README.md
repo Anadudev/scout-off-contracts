@@ -624,7 +624,7 @@ Each contract defines its own error enum. The same numeric code can mean differe
 | 2 | `NotInitialized` | Operation before `initialize` | Admin must call `initialize` first |
 | 3 | `ContractPaused` | Circuit breaker is active | Wait for admin to call `unpause_contract` |
 | 4 | `Unauthorized` | Wrong account or non-Elite tier for trial offer | Confirm account and subscription tier |
-| 5 | `InsufficientFee` | Zero accumulated fees on withdrawal | Ensure fees have been collected before withdrawing |
+| 5 | `InsufficientFee` | Scout underpaid a subscription or contact fee | Send a payment that matches `FeeConfig` exactly |
 | 6 | `ScoutNotSubscribed` | No subscription record found | Call `subscribe` with a valid tier and fee |
 | 7 | `SubscriptionExpired` | Subscription past `expires_at` | Renew subscription via `subscribe` |
 | 8 | `AlreadyContacted` | Duplicate `pay_to_contact` for same player | Contact is already unlocked |
@@ -639,6 +639,9 @@ Each contract defines its own error enum. The same numeric code can mean differe
 | 18 | `ContactQuotaExceeded` | Scout has hit the platform-wide contact quota for the current period | Wait for the quota window to reset or contact admin |
 | 19 | `TrialOfferRateLimited` | Scout sent a trial offer to the same player within the cooldown window | Wait for the cooldown period to expire before retrying |
 | 20 | `ProContactLimitReached` | Pro-tier scout has reached the `pro_contact_limit` contacts for the current subscription period | Upgrade to Elite (no limit applies) or wait for subscription to renew |
+| 21 | `PendingAdminNotSet` | `accept_admin` called before an admin transfer was proposed | Call `propose_admin` first, then have the proposed address call `accept_admin` |
+| 22 | `TrialOfferAlreadyConfirmed` | `confirm_trial_offer` called twice for the same offer | No action; the offer was already confirmed |
+| 23 | `TrialOfferExpired` | `confirm_trial_offer` called after the offer's expiry window | Log a new trial offer |
 
 ## Events
 

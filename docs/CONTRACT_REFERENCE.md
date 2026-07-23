@@ -1600,7 +1600,9 @@ proposal and does not immediately change the admin.
 #### `set_progress_contract(addr: Address) -> Result<(), ScoutAccessError>`
 
 Register the progress contract address so `log_trial_offer` can call
-`advance_level` cross-contract (admin only).
+`advance_level` cross-contract (admin only). Unlike
+`verification.set_progress_contract`, this has no first-call-only guard —
+it can always be re-invoked to re-wire the link.
 
 | | |
 |---|---|
@@ -1610,6 +1612,24 @@ Register the progress contract address so `log_trial_offer` can call
 ```bash
 stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
   -- set_progress_contract --addr $PROGRESS_CONTRACT_ID
+```
+
+---
+
+#### `update_progress_contract(addr: Address) -> Result<(), ScoutAccessError>`
+
+Alias for `set_progress_contract`, provided for naming consistency with
+`verification.update_progress_contract` so the same verb can be used to
+re-wire the progress contract link across contracts.
+
+| | |
+|---|---|
+| **Auth** | Admin must sign |
+| **Errors** | `NotInitialized` · `Unauthorized` |
+
+```bash
+stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
+  -- update_progress_contract --addr $NEW_PROGRESS_CONTRACT_ID
 ```
 
 ---
@@ -2473,7 +2493,7 @@ pub struct TrialOffer {
 | 2 | `NotInitialized` | Operation before `initialize` |
 | 3 | `ContractPaused` | Circuit breaker is active |
 | 4 | `Unauthorized` | Wrong account or non-Elite tier for trial offer |
-| 5 | `InsufficientFee` | Zero accumulated fees on withdrawal |
+| 5 | `InsufficientFee` | Scout underpaid a subscription or contact fee |
 | 6 | `ScoutNotSubscribed` | No subscription record found |
 | 7 | `SubscriptionExpired` | Subscription past `expires_at` |
 | 8 | `AlreadyContacted` | Duplicate `pay_to_contact` for same player |
@@ -2488,6 +2508,9 @@ pub struct TrialOffer {
 | 18 | `ContactQuotaExceeded` | Scout has hit the platform-wide contact quota for the current period (applies to all tiers; enforced by an admin-configurable platform cap, distinct from the per-Pro-scout `pro_contact_limit`) |
 | 19 | `TrialOfferRateLimited` | Elite scout sent a trial offer to the same player within the cooldown window — the offer was already logged; retry after the cooldown expires |
 | 20 | `ProContactLimitReached` | Pro-tier scout has reached the `pro_contact_limit` contacts for the current subscription period (Elite scouts are exempt from this limit) |
+| 21 | `PendingAdminNotSet` | `accept_admin` called before an admin transfer was proposed via `propose_admin` |
+| 22 | `TrialOfferAlreadyConfirmed` | `confirm_trial_offer` called twice for the same trial offer |
+| 23 | `TrialOfferExpired` | `confirm_trial_offer` called after the offer's confirmation window elapsed |
 
 ---
 

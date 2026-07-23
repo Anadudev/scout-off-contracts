@@ -2,9 +2,8 @@
 mod errors;
 mod events;
 mod types;
-
 use errors::ScoutAccessError;
-use types::{ContactRecord, DataKey, ProContactPeriod, Subscription, TrialOffer, FeeConfig, TrialEscrow};
+use types::{ContactRecord, DataKey, ProContactPeriod, Subscription, TrialEscrow, TrialOffer};
 pub use types::{FeeConfig, SubscriptionTier};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
@@ -181,6 +180,10 @@ impl ScoutAccessContract {
 
     /// Register the progress contract address so log_trial_offer can
     /// atomically advance the player to Level 3 (admin only).
+    ///
+    /// Unlike `verification.set_progress_contract`, this has no
+    /// first-call-only guard: it can always be re-invoked to re-wire the
+    /// link.
     pub fn set_progress_contract(env: Env, addr: Address) -> Result<(), ScoutAccessError> {
         Self::bump_instance_ttl(&env);
         require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
@@ -189,6 +192,13 @@ impl ScoutAccessContract {
             .set(&DataKey::ProgressContract, &addr);
         events::progress_contract_updated(&env, &addr);
         Ok(())
+    }
+
+    /// Alias for `set_progress_contract`, kept for naming consistency with
+    /// `verification.update_progress_contract` — operators re-wiring after
+    /// the initial deployment can use the same verb across contracts.
+    pub fn update_progress_contract(env: Env, addr: Address) -> Result<(), ScoutAccessError> {
+        Self::set_progress_contract(env, addr)
     }
 
     /// Emergency refund: admin returns `amount` XLM (stroops) from the
@@ -800,9 +810,15 @@ impl ScoutAccessContract {
             // Refund escrow to scout
             let token_addr = Self::get_token(&env)?;
             let contract_addr = env.current_contract_address();
-            token::Client::new(&env, &token_addr).transfer(&contract_addr, &offer.scout, &escrow.amount);
+            token::Client::new(&env, &token_addr).transfer(
+                &contract_addr,
+                &offer.scout,
+                &escrow.amount,
+            );
             // Cleanup escrow
-            env.storage().persistent().remove(&DataKey::TrialEscrow(player_id, index));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::TrialEscrow(player_id, index));
             // Emit expiry event
             events::trial_offer_expired(&env, player_id, &offer.scout, index);
             return Err(ScoutAccessError::TrialOfferExpired);
@@ -814,12 +830,14 @@ impl ScoutAccessContract {
             .instance()
             .get(&DataKey::ProgressContract)
             .ok_or(ScoutAccessError::InvalidInput)?;
-        progress_contract::ProgressContractClient::new(&env, &progress_addr)
+        progress_contract::Client::new(&env, &progress_addr)
             .advance_level(&env, &env.current_contract_address(), player_id, index)
             .map_err(|_| ScoutAccessError::ProgressCallFailed)?;
 
         // Cleanup escrow after successful confirmation
-        env.storage().persistent().remove(&DataKey::TrialEscrow(player_id, index));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TrialEscrow(player_id, index));
         // Emit confirmed event
         events::trial_offer_confirmed(&env, player_id, &offer.scout, index);
         Ok(())
@@ -1428,7 +1446,10 @@ mod tests {
     #[test]
     fn test_version() {
         let (env, _, _, _, client) = setup();
-        assert_eq!(client.version(), String::from_str(&env, env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            client.version(),
+            String::from_str(&env, env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]
@@ -2720,6 +2741,25 @@ mod tests {
                 )
             ]
         );
+    }
+
+    #[test]
+    fn test_update_progress_contract_is_alias_for_set() {
+        let (env, _admin, _xlm, contract_id, client) = setup();
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+
+        client.set_progress_contract(&first);
+        client.update_progress_contract(&second);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                env.storage()
+                    .instance()
+                    .get::<DataKey, Address>(&DataKey::ProgressContract),
+                Some(second)
+            );
+        });
     }
 
     // -------------------------------------------------------------------------

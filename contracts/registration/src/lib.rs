@@ -993,6 +993,41 @@ mod tests {
 
     #[test]
     #[should_panic]
+    fn test_old_admin_loses_access_after_transfer() {
+        let (env, client) = setup();
+        let old_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&old_admin);
+
+        client.propose_admin(&new_admin);
+        env.mock_auths(&[MockAuth {
+            address: &new_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_admin",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.accept_admin();
+
+        // Privileged calls now require new_admin's signature. Restricting
+        // the mocked auth to old_admin must make the call fail, proving the
+        // old admin no longer has effective access.
+        env.mock_auths(&[MockAuth {
+            address: &old_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "pause_contract",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.pause_contract();
+    }
+
+    #[test]
+    #[should_panic]
     fn test_third_party_cannot_accept_admin() {
         let (env, client) = setup();
         let old_admin = Address::generate(&env);
@@ -1016,7 +1051,10 @@ mod tests {
     #[test]
     fn test_version() {
         let (env, client) = setup();
-        assert_eq!(client.version(), String::from_str(&env, env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            client.version(),
+            String::from_str(&env, env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]
@@ -2132,6 +2170,41 @@ mod tests {
         // Clear all auths so admin check fails
         env.mock_auths(&[]);
         let result = client.try_verify_scout(&scout_id);
+        assert!(result.is_err());
+    }
+
+    /// `set_player_level` must only be callable by the address registered via
+    /// `set_progress_contract`. A random address attempting to authorize the
+    /// same call must be rejected, since `progress_contract.require_auth()`
+    /// only succeeds for an authorization entry matching the stored address.
+    #[test]
+    fn test_set_player_level_rejects_non_progress_contract_caller() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let wallet = Address::generate(&env);
+        let vitals = dummy_vitals(&env);
+        let hashes = vec![&env, String::from_str(&env, "QmTest")];
+        let player_id = client.register_player(&wallet, &vitals, &hashes);
+
+        let progress_contract = Address::generate(&env);
+        client.set_progress_contract(&progress_contract);
+
+        // A random address — not the registered progress contract — signs
+        // the authorization for this call instead.
+        let random_caller = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &random_caller,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "set_player_level",
+                args: (player_id, ProgressLevel::VerifiedIdentity).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+
+        let result = client.try_set_player_level(&player_id, &ProgressLevel::VerifiedIdentity);
         assert!(result.is_err());
     }
 

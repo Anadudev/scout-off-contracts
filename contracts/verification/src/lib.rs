@@ -386,7 +386,7 @@ impl VerificationContract {
             .instance()
             .get(&DataKey::ActiveValidatorCount)
             .unwrap_or(0u32);
-        let batch_len = entries.len() as u32;
+        let batch_len = entries.len();
         if current_count
             .checked_add(batch_len)
             .ok_or(VerificationError::Overflow)?
@@ -1271,6 +1271,41 @@ mod tests {
 
     #[test]
     #[should_panic]
+    fn test_old_admin_loses_access_after_transfer() {
+        let (env, client) = setup();
+        let old_admin = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.initialize(&old_admin);
+
+        client.propose_admin(&new_admin);
+        env.mock_auths(&[MockAuth {
+            address: &new_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "accept_admin",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.accept_admin();
+
+        // Privileged calls now require new_admin's signature. Restricting
+        // the mocked auth to old_admin must make the call fail, proving the
+        // old admin no longer has effective access.
+        env.mock_auths(&[MockAuth {
+            address: &old_admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "pause_contract",
+                args: vec![&env],
+                sub_invokes: &[],
+            },
+        }]);
+        client.pause_contract();
+    }
+
+    #[test]
+    #[should_panic]
     fn test_third_party_cannot_accept_admin() {
         let (env, client) = setup();
         let old_admin = Address::generate(&env);
@@ -1543,7 +1578,10 @@ mod tests {
     #[test]
     fn test_version() {
         let (env, client) = setup();
-        assert_eq!(client.version(), String::from_str(&env, env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            client.version(),
+            String::from_str(&env, env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]

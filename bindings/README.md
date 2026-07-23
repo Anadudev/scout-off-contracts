@@ -16,7 +16,7 @@ Before you can generate bindings you need:
 1. **Deployed contracts** — run `./scripts/deploy.sh testnet` (or `mainnet`).
    This writes contract IDs to `.env.contracts`.
 2. **Initialized contracts** — run `./scripts/initialize.sh testnet`.
-3. **Stellar CLI** installed (exact pinned version **27.0.0** required) — see
+3. **Stellar CLI** installed (exact pinned version **25.2.0** required) — see
    [Installing the pinned stellar-cli version](../docs/CONTRIBUTING.md#installing-the-pinned-stellar-cli-version) in `docs/CONTRIBUTING.md` for detailed installation instructions.
 4. **`.env.contracts`** present and containing all four non-empty IDs:
    ```

@@ -1463,6 +1463,9 @@ mod tests {
     #[test]
     fn test_version() {
         let (env, client, _) = setup();
-        assert_eq!(client.version(), String::from_str(&env, env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            client.version(),
+            String::from_str(&env, env!("CARGO_PKG_VERSION"))
+        );
     }
 }
