@@ -67,6 +67,7 @@ jobs:
           shellcheck scripts/generate-bindings.sh
           shellcheck scripts/check-bindings.sh
           shellcheck scripts/health-check.sh
+          shellcheck scripts/smoke-test.sh
           shellcheck scripts/rollback.sh
           shellcheck scripts/emergency-pause.sh
           shellcheck scripts/emergency-unpause.sh
@@ -239,6 +240,19 @@ jobs:
 
       - name: Verify cross-contract wiring
         run: bash scripts/verify-cross-contract-wiring.sh local
+
+      - name: Run health-check.sh against local sandbox
+        run: bash scripts/health-check.sh local
+
+      - name: Run smoke-test.sh against local sandbox
+        run: |
+          set -euo pipefail
+          # ADMIN_ADDRESS was persisted to $GITHUB_ENV in the "Generate a
+          # local sandbox identity" step above. DEPLOYER_SECRET is re-derived
+          # here since it was only exported within the "Initialize contracts"
+          # step's own process and doesn't carry over between steps.
+          export DEPLOYER_SECRET="$(stellar keys show ci-deployer 2>/dev/null || true)"
+          bash scripts/smoke-test.sh local
 
       - name: Generate TypeScript bindings
         run: bash scripts/generate-bindings.sh local
