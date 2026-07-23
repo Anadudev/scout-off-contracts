@@ -261,16 +261,61 @@ stellar contract invoke --id $PROGRESS_CONTRACT_ID \
 
 If a bug cannot be fixed via `upgrade()` (e.g. the storage layout must change in a way that requires a fresh deploy), you must migrate to a new contract address. This is a breaking change — all clients and the off-chain indexer must be updated.
 
+This is the highest-risk operation in the deployment lifecycle, so most of it is
+now automated by **`scripts/migrate-contract.sh`**, an orchestrator that chains
+the existing scripts in the order below with a `--dry-run` preview and an
+interactive confirmation gate before every state-mutating step. Run a dry run
+first:
+
+```bash
+# Preview every action without executing anything:
+./scripts/migrate-contract.sh testnet --dry-run
+
+# Then run for real (prompts y/N before each mutating step):
+./scripts/migrate-contract.sh testnet
+# ...or non-interactively (CI/automation): add --yes
+```
+
+`migrate-contract.sh` performs steps 1–5 below; steps 6–8 remain manual. It also
+requires `DEPLOYER_SECRET` / `ADMIN_ADDRESS` / `XLM_TOKEN_ADDRESS` (same as
+`deploy.sh` / `initialize.sh`).
+
 Migration procedure:
 
-1. Deploy the new contract: `./scripts/deploy.sh testnet` (or deploy just the affected contract manually).
-2. Initialize the new contract: `./scripts/initialize.sh testnet`.
-3. Pause the old contract so no new state is written: `stellar contract invoke --id $OLD_ID -- pause_contract`.
-4. Replay any off-chain events against the new contract to seed initial state (use the backend indexer's event log).
-5. Update `.env.contracts` with the new contract ID.
-6. Regenerate TypeScript bindings: `./scripts/generate-bindings.sh testnet`.
-7. Deploy the updated backend and frontend with the new contract ID.
-8. Announce the migration in release notes with the old and new contract IDs.
+1. **Deploy the new contract set** — `migrate-contract.sh` calls `./scripts/deploy.sh testnet` (which also snapshots the old IDs to `.env.contracts.snapshot`).
+2. **Initialize + wire the new set** — via `./scripts/initialize.sh testnet`.
+3. **Pause the old contracts** so no new state is written to the retired addresses — `migrate-contract.sh` invokes `pause_contract` on each old contract ID (equivalent to `stellar contract invoke --id $OLD_ID -- pause_contract`).
+4. **Replay state onto the new set** — via `./scripts/replay-state.sh testnet` (also invoked automatically by the orchestrator). See the important limitation below.
+5. **Health-check the new set** — via `./scripts/health-check.sh testnet`. At this point `.env.contracts` already points at the new IDs.
+6. **Regenerate TypeScript bindings** (manual): `./scripts/generate-bindings.sh testnet`.
+7. **Redeploy the backend and frontend** (manual) with the new contract IDs.
+8. **Announce the migration** (manual) in release notes with the old and new contract IDs.
+
+#### Step 4 in detail — what can and cannot be replayed
+
+`scripts/replay-state.sh` reads state from the old contracts and writes what it
+legitimately can to the new ones. **It is not a full automatic migration**, because
+of an authorization asymmetry between the two data categories:
+
+- **Validators — replayed automatically.** `verification.register_validator(wallet, credentials)` is **admin-only** (`require_admin`, no wallet self-auth). The operator holds the admin key, so the script reads every active validator via `get_validators()` + `get_validator()` on the old contract and re-registers each one on the new contract, signed by `DEPLOYER_SECRET`. No user action required.
+- **Players and scouts — CANNOT be replayed automatically.** `registration.register_player(wallet, vitals, ipfs_hashes)` and `registration.register_scout(wallet, region)` both call `wallet.require_auth()` — they require the **player's / scout's own signature**, not the admin's. An operator does not hold those private keys and therefore cannot submit a valid registration transaction on their behalf. The script still **exports** all player and scout data (via `get_player_count()`/`get_player(id)` and `get_scout_count()`/`get_scout(id)`) to timestamped JSON files under `migration-export/` so nothing is lost, but the re-seeding on the new contract must happen by one of:
+  - **(a)** each player / scout re-registering themselves against the new contract ID (self-service), or
+  - **(b)** the team adding a dedicated **admin-only seeding entrypoint** to the registration contract (e.g. an `admin_seed_player`). This is a **documented follow-up**, out of scope for the current tooling.
+
+  > Note on levels: the registration contract does **not** store a player's level — the progress contract is the source of truth (`resolve_level` / `set_player_level`). The exported `PlayerProfile` already carries the `level` field resolved from the old progress contract, so it is captured in the export for whichever re-seeding path is chosen.
+
+#### Testing a migration against the local sandbox
+
+`scripts/migrate-contract-smoke-test.sh` exercises the whole path
+(deploy old → seed a validator + a player → migrate → replay → **before/after
+comparison**) against a local Soroban sandbox, using the same
+`stellar/quickstart:testing` container as the `bindings-smoke-test` CI job. It
+requires `docker` + the `stellar` CLI and is intended as a manual command (it
+skips cleanly if those are unavailable):
+
+```bash
+./scripts/migrate-contract-smoke-test.sh
+```
 
 ### What survives an upgrade
 
