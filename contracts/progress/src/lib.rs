@@ -1414,6 +1414,10 @@ mod tests {
         assert_eq!(client.get_level(&999u64), ProgressLevel::Unverified);
     }
 
+    // #399: get_history_count falls back to 0 when no HistoryCounter storage
+    // key exists yet (i.e. the player has no history). Guards against a
+    // regression where removing the unwrap_or(0) default would panic on the
+    // first query for any new player.
     #[test]
     fn test_get_history_count_returns_zero_when_no_progress() {
         let (_, client, _) = setup();
