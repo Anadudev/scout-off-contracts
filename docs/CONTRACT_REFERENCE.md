@@ -2473,7 +2473,7 @@ pub struct TrialOffer {
 | 2 | `NotInitialized` | Operation before `initialize` |
 | 3 | `ContractPaused` | Circuit breaker is active |
 | 4 | `Unauthorized` | Wrong account or non-Elite tier for trial offer |
-| 5 | `InsufficientFee` | Zero accumulated fees on withdrawal |
+| 5 | `InsufficientFee` | Scout underpaid a subscription or contact fee |
 | 6 | `ScoutNotSubscribed` | No subscription record found |
 | 7 | `SubscriptionExpired` | Subscription past `expires_at` |
 | 8 | `AlreadyContacted` | Duplicate `pay_to_contact` for same player |
@@ -2488,6 +2488,9 @@ pub struct TrialOffer {
 | 18 | `ContactQuotaExceeded` | Scout has hit the platform-wide contact quota for the current period (applies to all tiers; enforced by an admin-configurable platform cap, distinct from the per-Pro-scout `pro_contact_limit`) |
 | 19 | `TrialOfferRateLimited` | Elite scout sent a trial offer to the same player within the cooldown window — the offer was already logged; retry after the cooldown expires |
 | 20 | `ProContactLimitReached` | Pro-tier scout has reached the `pro_contact_limit` contacts for the current subscription period (Elite scouts are exempt from this limit) |
+| 21 | `PendingAdminNotSet` | `accept_admin` called before an admin transfer was proposed via `propose_admin` |
+| 22 | `TrialOfferAlreadyConfirmed` | `confirm_trial_offer` called twice for the same trial offer |
+| 23 | `TrialOfferExpired` | `confirm_trial_offer` called after the offer's confirmation window elapsed |
 
 ---
 
