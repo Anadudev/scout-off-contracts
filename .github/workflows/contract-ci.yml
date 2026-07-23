@@ -42,6 +42,25 @@ jobs:
       - name: Test progress contract
         run: cargo test -p scoutchain-progress -- --nocapture
 
+      - name: CPU-instruction cost budget report
+        # cost_budget.rs asserted its own pass/fail already as part of the
+        # "Run tests" step above (cargo test --workspace picks it up
+        # automatically); this step just re-runs it with --nocapture to
+        # produce a readable per-operation report for the CI artifact. See
+        # ci/cpu-cost-budget.md for the budget table and how to raise a
+        # budget.
+        run: |
+          set -euo pipefail
+          cargo test --workspace --test cost_budget -- --nocapture --test-threads=1 \
+            | tee cpu-cost-budget-report.txt
+
+      - name: Upload CPU-cost budget report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-cost-budget-${{ github.sha }}
+          path: cpu-cost-budget-report.txt
+          if-no-files-found: error
+
       - name: Build WASM (release)
         run: cargo build --workspace --target wasm32v1-none --release
 
@@ -344,7 +363,75 @@ jobs:
             python3 -c "import json, sys; json.load(open('${out}')); print('${contract}: valid JSON')"
           done
 
-      - name: Upload ABI artifacts
+      - name: Measure optimized WASM size
+        run: |
+          set -euo pipefail
+          WASM=target/wasm32v1-none/release
+          echo '{}' > abi/wasm-sizes.json
+          for contract in registration verification progress scout_access; do
+            wasm_src="${WASM}/scoutchain_${contract}.wasm"
+            wasm_opt="${WASM}/scoutchain_${contract}.optimized.wasm"
+            echo "==> Optimizing ${contract}..."
+            stellar contract optimize --wasm "$wasm_src" --wasm-out "$wasm_opt"
+            size=$(wc -c < "$wasm_opt" | tr -d ' ')
+            echo "    ${contract}: ${size} bytes (optimized)"
+            python3 -c "
+import json
+path = 'abi/wasm-sizes.json'
+with open(path) as f:
+    data = json.load(f)
+data['${contract}'] = ${size}
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2, sort_keys=True)
+"
+          done
+          echo ""
+          echo "==> abi/wasm-sizes.json:"
+          cat abi/wasm-sizes.json
+
+      - name: Check WASM size budget
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import json
+          import sys
+
+          with open("abi/wasm-sizes.json") as f:
+              measured = json.load(f)
+          with open("ci/wasm-size-budget.json") as f:
+              budget = json.load(f)["budgets"]
+
+          failed = []
+          print(f"{'contract':<14} {'measured':>10} {'budget':>10} {'headroom':>10}")
+          for contract, cap in sorted(budget.items()):
+              size = measured.get(contract)
+              if size is None:
+                  failed.append(f"{contract}: no measured size found (build/optimize step may have failed)")
+                  continue
+              headroom = cap - size
+              print(f"{contract:<14} {size:>10} {cap:>10} {headroom:>10}")
+              if size > cap:
+                  over_by = size - cap
+                  pct = (over_by / cap) * 100
+                  failed.append(
+                      f"{contract}: optimized WASM is {size} bytes, "
+                      f"exceeding the {cap}-byte budget by {over_by} bytes ({pct:.1f}% over). "
+                      f"See ci/wasm-size-budget.json for how to raise this budget "
+                      f"if the growth is intentional."
+                  )
+
+          if failed:
+              print("")
+              print("FAIL: WASM size budget exceeded:")
+              for msg in failed:
+                  print(f"  - {msg}")
+              sys.exit(1)
+
+          print("")
+          print("All contracts within their WASM size budget.")
+          PYEOF
+
+      - name: Upload ABI and size-budget artifacts
         uses: actions/upload-artifact@v4
         with:
           name: contract-abis-${{ github.sha }}
