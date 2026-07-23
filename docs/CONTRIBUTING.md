@@ -58,16 +58,25 @@ The repository defines five CI jobs across `.github/workflows/ci.yml` and `.gith
 | Job | File | What it checks | Required |
 |-----|------|----------------|----------|
 | `check-todos` | `ci.yml` | Scans `contracts/` for `TODO`/`FIXME`/`HACK`/`XXX` markers — fails if any are found | Yes |
-| `test` | `contract-ci.yml` | Runs `cargo test --workspace`, tests `scoutchain-progress`, builds WASM release | Yes |
+| `test` | `contract-ci.yml` | Runs `cargo test --workspace` (including each contract's `tests/cost_budget.rs` CPU-instruction cost budget), tests `scoutchain-progress`, uploads a `cpu-cost-budget-<sha>` report artifact, builds WASM release | Yes |
 | `lint` | `contract-ci.yml` | Clippy (deny warnings), `rustfmt` check, shellcheck on shell scripts, docs completeness (`scripts/check-docs.sh`), bindings template validation (`scripts/check-bindings.sh`) | Yes |
 | `bindings-smoke-test` | `contract-ci.yml` | Deploys all contracts to a local Soroban sandbox, generates TypeScript bindings, verifies their structure, and builds each binding package | Yes |
-| `abi-export` | `contract-ci.yml` | Exports contract ABIs to `abi/*.json` using `stellar contract info interface`, validates JSON parseability, and uploads the artifacts; per `docs/VERSIONING.md` the ABI diff is how breaking changes are detected | Yes |
+| `abi-export` | `contract-ci.yml` | Exports contract ABIs to `abi/*.json` using `stellar contract info interface`, validates JSON parseability, measures each contract's optimized WASM size against `ci/wasm-size-budget.json`, and uploads the artifacts; per `docs/VERSIONING.md` the ABI diff is how breaking changes are detected | Yes |
 
 > **Note on the audit:** The required-status configuration above reflects the actual branch-protection rules on `main` at the time of writing. Because changing branch-protection settings requires repository admin access, any future update to the required checks must be performed by a maintainer in the repository settings (`Settings > Branches > main > Require status checks`).
 
 ### Why `abi-export` is required
 
 Per `docs/VERSIONING.md`, the ABI export exists specifically so that reviewers can diff the output across commits to detect breaking changes. Making it a required check ensures no PR can merge without a fresh ABI artifact being generated and examined.
+
+### WASM size and CPU-cost budgets
+
+The release profile (`opt-level = "z"`, `lto = true`, `codegen-units = 1`) exists because Soroban charges resource fees proportional to CPU instructions and ledger I/O, and enforces hard per-transaction and per-ledger-entry size limits. Two checked-in budgets guard against silent regressions:
+
+- **WASM binary size** — `ci/wasm-size-budget.json`, enforced by the `abi-export` job's "Check WASM size budget" step against each contract's `stellar contract optimize` output.
+- **CPU-instruction cost** — `ci/cpu-cost-budget.md` (source of truth: the `*_CPU_BUDGET` constants in each `contracts/<name>/tests/cost_budget.rs`), enforced as part of `cargo test --workspace` in the `test` job.
+
+Both files document their own process for intentionally raising a budget when a legitimate feature grows a contract's size or an operation's cost — bump the number and add a one-line justification in the PR description.
 
 ## Contract change checklist
 
