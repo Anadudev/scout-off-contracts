@@ -830,6 +830,11 @@ mod tests {
         assert_eq!(level, ProgressLevel::VerifiedIdentity);
     }
 
+    // #397: With DataKey::VerificationContract configured (done in setup()),
+    // advance_level must reject a direct call from any address that is
+    // neither the configured VerificationContract nor the optional
+    // ScoutAccessContract — the caller whitelist must not have an open
+    // fallback.
     #[test]
     fn test_advance_level_unauthorized_when_verification_contract_set() {
         let (env, client, _verification) = setup();
