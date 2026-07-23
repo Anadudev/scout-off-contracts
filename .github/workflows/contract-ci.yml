@@ -100,7 +100,8 @@ jobs:
 
       - name: Install Stellar CLI (pinned)
         run: |
-          STELLAR_CLI_VERSION="27.0.0"
+          # Keep in sync with: docs/CONTRIBUTING.md, scripts/generate-bindings.sh, and the abi-export CI step
+          STELLAR_CLI_VERSION="25.2.0"
           curl -sSL "https://raw.githubusercontent.com/stellar/stellar-cli/v${STELLAR_CLI_VERSION}/install.sh" | bash
           echo "$HOME/.stellar/bin" >> "$GITHUB_PATH"
 
@@ -296,9 +297,11 @@ jobs:
       - name: Build WASM (release)
         run: cargo build --workspace --target wasm32v1-none --release
 
-      - name: Install Stellar CLI
+      - name: Install Stellar CLI (pinned)
         run: |
-          curl -sSL https://raw.githubusercontent.com/stellar/stellar-cli/main/install.sh | bash
+          # Keep in sync with: docs/CONTRIBUTING.md, scripts/generate-bindings.sh, and the bindings-smoke-test CI step
+          STELLAR_CLI_VERSION="25.2.0"
+          curl -sSL "https://raw.githubusercontent.com/stellar/stellar-cli/v${STELLAR_CLI_VERSION}/install.sh" | bash
           echo "$HOME/.stellar/bin" >> "$GITHUB_PATH"
 
       - name: Export contract ABIs

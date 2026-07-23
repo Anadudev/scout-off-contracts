@@ -25,7 +25,7 @@
  * Note on generated types: the exact shape of `AssembledTransaction<T>.result`
  * for a fallible contract method (`Ok<T> | Err<E>` vs. an auto-thrown error)
  * depends on the pinned `stellar-cli` version used by
- * `scripts/generate-bindings.sh` (currently 27.0.0). This file defensively
+ * `scripts/generate-bindings.sh` (currently 25.2.0). This file defensively
  * checks for both shapes — verify against your generated `src/index.ts` and
  * adjust if a newer codegen version changes that convention.
  */
