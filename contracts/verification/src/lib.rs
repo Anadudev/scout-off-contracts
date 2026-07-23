@@ -386,7 +386,7 @@ impl VerificationContract {
             .instance()
             .get(&DataKey::ActiveValidatorCount)
             .unwrap_or(0u32);
-        let batch_len = entries.len() as u32;
+        let batch_len = entries.len();
         if current_count
             .checked_add(batch_len)
             .ok_or(VerificationError::Overflow)?

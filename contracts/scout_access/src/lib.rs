@@ -2,11 +2,8 @@
 mod errors;
 mod events;
 mod types;
-
 use errors::ScoutAccessError;
-use types::{
-    ContactRecord, DataKey, FeeConfig, ProContactPeriod, Subscription, TrialEscrow, TrialOffer,
-};
+use types::{ContactRecord, DataKey, ProContactPeriod, Subscription, TrialEscrow, TrialOffer};
 pub use types::{FeeConfig, SubscriptionTier};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
@@ -833,7 +830,7 @@ impl ScoutAccessContract {
             .instance()
             .get(&DataKey::ProgressContract)
             .ok_or(ScoutAccessError::InvalidInput)?;
-        progress_contract::ProgressContractClient::new(&env, &progress_addr)
+        progress_contract::Client::new(&env, &progress_addr)
             .advance_level(&env, &env.current_contract_address(), player_id, index)
             .map_err(|_| ScoutAccessError::ProgressCallFailed)?;
 
