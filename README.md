@@ -413,6 +413,10 @@ psql $DATABASE_URL -f migrations/001_initial_schema.sql
 
 The migration is idempotent and safe to re-run against an already-migrated database: every table and index uses `IF NOT EXISTS`, and the seed row uses `ON CONFLICT DO NOTHING`.
 
+To verify this database's copy of on-chain state hasn't drifted from the
+contracts, see [`scripts/reconcile-indexer.js`](scripts/reconcile-indexer.js)
+and [docs/INDEXER.md](docs/INDEXER.md).
+
 1. **Player Onboarding**
    - Connect Freighter wallet via SEP-10
    - Fill out profile: age, position, location, highlight reel links
