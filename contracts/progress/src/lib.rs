@@ -1376,4 +1376,47 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn test_progress_history_and_page_consistency() {
+        let (_env, client, validator) = setup();
+        let player_id = 7u64;
+
+        // Populate history with 3 entries via advance_level and reset_player_level
+        client.advance_level(&validator, &player_id, &1u32);
+        client.reset_player_level(&player_id, &ProgressLevel::Unverified);
+        client.advance_level(&validator, &player_id, &2u32);
+
+        assert_eq!(client.get_history_count(&player_id), 3);
+
+        // 1. get_progress_history returns all entries in chronological order
+        let full_history = client.get_progress_history(&player_id);
+        assert_eq!(full_history.len(), 3);
+
+        // 2. Concatenating get_progress_history_page results with limit=1 reconstructs identical ordered list
+        let mut paged_history = Vec::new(&_env);
+        let mut offset = 0u32;
+        loop {
+            let page = client.get_progress_history_page(&player_id, &offset, &1u32);
+            if page.is_empty() {
+                break;
+            }
+            for entry in page.iter() {
+                paged_history.push_back(entry);
+            }
+            offset += 1;
+        }
+        assert_eq!(full_history, paged_history);
+
+        // 3. get_history_entry for each index (1-indexed) matches corresponding entry from bulk-read functions
+        for i in 0..3u32 {
+            let entry_from_history = full_history.get(i).unwrap();
+            let entry_from_page = paged_history.get(i).unwrap();
+            let entry_individual = client.get_history_entry(&player_id, &(i + 1)).unwrap();
+
+            assert_eq!(entry_from_history, entry_individual);
+            assert_eq!(entry_from_page, entry_individual);
+        }
+    }
 }
+
