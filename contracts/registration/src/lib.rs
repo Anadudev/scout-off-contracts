@@ -211,7 +211,7 @@ impl RegistrationContract {
         env.storage()
             .persistent()
             .set(&DataKey::Player(player_id), &stored);
-        events::player_level_synced(&env, player_id);
+        events::player_level_synced(&env, player_id, &progress_contract);
         Ok(())
     }
 
@@ -323,13 +323,13 @@ impl RegistrationContract {
         env.storage()
             .persistent()
             .set(&DataKey::Player(player_id), &profile);
-        events::profile_updated(&env, player_id);
+        events::profile_updated(&env, player_id, &profile.wallet);
         Ok(())
     }
 
     /// Deregister a player profile (admin only, GDPR right-to-erasure).
     pub fn deregister_player(env: Env, player_id: u64) -> Result<(), ScoutChainError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         let profile = Self::load_stored_player(&env, player_id)?;
         // Resolve level before removing storage keys (progress contract is source of truth)
         let level = Self::resolve_level(&env, player_id);
@@ -356,7 +356,7 @@ impl RegistrationContract {
         // Remove from composite index
         Self::composite_index_remove(&env, &level, &profile.vitals.region, player_id);
 
-        events::player_deregistered(&env, player_id);
+        events::player_deregistered(&env, player_id, &admin);
         Ok(())
     }
 
@@ -366,13 +366,13 @@ impl RegistrationContract {
     /// to skip this player. The on-chain profile, progress history, and all
     /// milestone data are fully preserved and still accessible via `get_player`.
     pub fn deactivate_player(env: Env, player_id: u64) -> Result<(), ScoutChainError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         // Ensure the player actually exists before setting the flag.
         Self::load_stored_player(&env, player_id)?;
         env.storage()
             .persistent()
             .set(&DataKey::PlayerDeactivated(player_id), &true);
-        events::player_deactivated(&env, player_id);
+        events::player_deactivated(&env, player_id, &admin);
         Ok(())
     }
 
@@ -381,13 +381,13 @@ impl RegistrationContract {
     /// Clears the `PlayerDeactivated(player_id)` flag, making the player
     /// visible in `filter_players` results again.
     pub fn reactivate_player(env: Env, player_id: u64) -> Result<(), ScoutChainError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         // Ensure the player actually exists.
         Self::load_stored_player(&env, player_id)?;
         env.storage()
             .persistent()
             .remove(&DataKey::PlayerDeactivated(player_id));
-        events::player_reactivated(&env, player_id);
+        events::player_reactivated(&env, player_id, &admin);
         Ok(())
     }
 
@@ -937,8 +937,12 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, events::ADMIN_TRANSFER_PROPOSED),).into_val(&env),
-                    (old_admin.clone(), stale_admin).into_val(&env),
+                    (
+                        Symbol::new(&env, events::ADMIN_TRANSFER_PROPOSED),
+                        old_admin.clone(),
+                    )
+                        .into_val(&env),
+                    stale_admin.clone().into_val(&env),
                 )
             ]
         );
@@ -980,8 +984,12 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, events::ADMIN_TRANSFERRED),).into_val(&env),
-                    (old_admin, new_admin.clone()).into_val(&env),
+                    (
+                        Symbol::new(&env, events::ADMIN_TRANSFERRED),
+                        old_admin.clone(),
+                    )
+                        .into_val(&env),
+                    new_admin.clone().into_val(&env),
                 )
             ]
         );
@@ -2052,7 +2060,11 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (soroban_sdk::Symbol::new(&env, "player_deactivated"),).into_val(&env),
+                    (
+                        soroban_sdk::Symbol::new(&env, "player_deactivated"),
+                        admin.clone(),
+                    )
+                        .into_val(&env),
                     player_id.into_val(&env)
                 )
             ]
@@ -2085,7 +2097,11 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (soroban_sdk::Symbol::new(&env, "player_reactivated"),).into_val(&env),
+                    (
+                        soroban_sdk::Symbol::new(&env, "player_reactivated"),
+                        admin.clone(),
+                    )
+                        .into_val(&env),
                     player_id.into_val(&env)
                 )
             ]

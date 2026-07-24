@@ -1123,16 +1123,19 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID -- version
 
 | Event | Topics | Data | Description |
 |-------|--------|------|-------------|
-| `contract_initialized` | event_name | admin (Address) | Emitted on successful initialization |
-| `admin_transfer_proposed` | event_name | old_admin (Address), new_admin (Address) | Admin replacement proposed |
-| `admin_transferred` | event_name | old_admin (Address), new_admin (Address) | Pending admin accepts control |
-| `milestone_approved` | event_name, validator_address, milestone_index (u32) | player_id (u64), description (String), evidence_hash (String) | Validator confirms a player achievement |
-| `validator_registered` | event_name | validator_address | New validator onboarded |
-| `validator_revoked` | event_name | validator_address, reason (String) | Validator deactivated |
-| `milestone_disputed` | event_name, player_id (u64), milestone_index (u32) | reason (String) | Player disputes a milestone attribution |
-| `progress_contract_updated` | event_name | new_address (Address) | Progress contract re-wired |
-| `contract_paused` | event_name | admin (Address) | Circuit breaker engaged |
-| `contract_unpaused` | event_name | admin (Address) | Circuit breaker released |
+| `contract_initialized` | event_name, admin (Address) | admin (Address) | Emitted on successful initialization |
+| `admin_transfer_proposed` | event_name, old_admin (Address) | new_admin (Address) | Admin replacement proposed |
+| `admin_transferred` | event_name, old_admin (Address) | new_admin (Address) | Pending admin accepts control |
+| `milestone_approved` | event_name, validator (Address) | player_id (u64), milestone_index (u32), description (String), evidence_hash (String) | Validator confirms a player achievement |
+| `validator_registered` | event_name, wallet (Address) | credentials (String) | New validator onboarded |
+| `validator_revoked` | event_name, admin (Address) | wallet (Address), reason (String) | Validator deactivated |
+| `validator_restored` | event_name, admin (Address) | wallet (Address) | Revoked validator re-activated |
+| `validator_transferred` | event_name, admin (Address) | old_wallet (Address), new_wallet (Address) | Validator identity migrated to new wallet |
+| `milestone_disputed` | event_name, player_wallet (Address) | player_id (u64), milestone_index (u32), reason (String) | Player disputes a milestone attribution |
+| `dispute_resolved` | event_name, admin (Address) | player_id (u64), milestone_index (u32), upheld (bool) | Admin resolves a milestone dispute |
+| `progress_contract_updated` | event_name, admin (Address) | progress_contract (Address) | Progress contract re-wired |
+| `contract_paused` | event_name, admin (Address) | () | Circuit breaker engaged |
+| `contract_unpaused` | event_name, admin (Address) | () | Circuit breaker released |
 
 #### Diagnostic Events (verification)
 
@@ -1502,9 +1505,11 @@ stellar contract invoke --id $PROGRESS_CONTRACT_ID -- version
 | Event | Topics | Data | Description |
 |-------|--------|------|-------------|
 | `progress_updated` | event_name, updated_by (Address) | player_id (u64), old_level, new_level | Player advances one tier |
-| `player_level_reset` | event_name | player_id (u64), old_level, new_level | Admin resets a player's level |
-| `admin_transfer_proposed` | event_name | old_admin (Address), new_admin (Address) | Admin replacement proposed |
-| `admin_transferred` | event_name | old_admin (Address), new_admin (Address) | Admin rights rotated |
+| `player_level_reset` | event_name, admin (Address) | player_id (u64), old_level, new_level | Admin resets a player's level |
+| `admin_transfer_proposed` | event_name, old_admin (Address) | new_admin (Address) | Admin replacement proposed |
+| `admin_transferred` | event_name, old_admin (Address) | new_admin (Address) | Admin rights rotated |
+| `contract_paused` | event_name, admin (Address) | () | Circuit breaker engaged |
+| `contract_unpaused` | event_name, admin (Address) | () | Circuit breaker released |
 
 ---
 
@@ -2226,12 +2231,16 @@ stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID -- version
 | `scout_subscribed` | event_name, scout (Address) | (tier: SubscriptionTier, fee_paid: i128) | Scout purchases a subscription |
 | `player_contacted` | event_name, scout (Address) | (player_id: u64, fee_paid: i128) | Scout unlocks player contact details |
 | `trial_offer_logged` | event_name, scout (Address) | player_id (u64) | Elite scout records a trial offer |
-| `fees_withdrawn` | event_name, to (Address) | amount (i128) | Admin withdraws accumulated fees |
+| `fees_withdrawn` | event_name, admin (Address) | (to: Address, amount: i128, timestamp: u64) | Admin withdraws accumulated fees |
 | `subscription_refunded` | event_name, scout (Address) | amount (i128) | Admin issues emergency refund to a scout |
-| `admin_transfer_proposed` | event_name | (old_admin: Address, new_admin: Address) | Admin replacement proposed |
-| `admin_transferred` | event_name | (old_admin: Address, new_admin: Address) | Admin rights rotated |
-| `contract_paused` | event_name | admin (Address) | Circuit breaker engaged |
-| `contract_unpaused` | event_name | admin (Address) | Circuit breaker released |
+| `admin_transfer_proposed` | event_name, old_admin (Address) | new_admin (Address) | Admin replacement proposed |
+| `admin_transferred` | event_name, old_admin (Address) | new_admin (Address) | Admin rights rotated |
+| `contract_paused` | event_name, admin (Address) | () | Circuit breaker engaged |
+| `contract_unpaused` | event_name, admin (Address) | () | Circuit breaker released |
+| `progress_contract_updated` | event_name, admin (Address) | progress_contract (Address) | Progress contract re-wired |
+| `fee_config_updated` | event_name, admin (Address) | (old_config: FeeConfig, new_config: FeeConfig) | Fee configuration changed |
+| `subscription_created` | event_name, scout (Address) | (tier, subscribed_at, expires_at) | New subscription purchased (first-ever for this scout) |
+| `subscription_renewed` | event_name, scout (Address) | (tier, subscribed_at, expires_at) | Existing subscription renewed or upgraded |
 
 #### Diagnostic Events (scout_access)
 
@@ -2553,32 +2562,72 @@ pub struct TrialOffer {
 
 ## Events
 
-| Event | Contract | Emitted When |
-|-------|----------|-------------|
-| `player_registered` | registration | New player profile created |
-| `scout_registered` | registration | New scout profile created |
-| `profile_updated` | registration | Player updates IPFS content hashes |
-| `player_deregistered` | registration | Admin removes a player profile |
-| `player_deactivated` | registration | Admin soft-hides a player from filter results |
-| `player_reactivated` | registration | Admin restores a soft-hidden player to filter results |
-| `scout_verified` | registration | Admin verifies a scout |
-| `player_level_synced` | registration | Progress contract syncs a player's level |
-| `contract_initialized` | verification | Contract initialized |
-| `admin_transfer_proposed` | all four contracts | Current admin proposes a replacement |
-| `admin_transferred` | all four contracts | Pending admin accepts control |
-| `milestone_approved` | verification | Validator confirms a player achievement |
-| `validator_registered` | verification | New validator onboarded |
-| `validator_revoked` | verification | Validator deactivated |
-| `progress_contract_updated` | verification | Progress contract address re-wired |
-| `contract_paused` | verification / scout_access | Circuit breaker engaged |
-| `contract_unpaused` | verification / scout_access | Circuit breaker released |
-| `progress_updated` | progress | Player advances one level |
-| `player_level_reset` | progress | Admin resets a player's level |
-| `scout_subscribed` | scout_access | Scout purchases a subscription |
-| `player_contacted` | scout_access | Scout unlocks player contact details |
-| `trial_offer_logged` | scout_access | Elite scout records a trial offer |
-| `fees_withdrawn` | scout_access | Admin withdraws accumulated fees |
-| `subscription_refunded` | scout_access | Admin issues emergency refund to a scout |
+All events follow the unified `(Symbol, actor)` topic schema introduced in #246. Soroban event indexers can filter any event by actor address using the second topic element.
+
+**Standard schema**: `topics: (event_name: Symbol, actor: Address)` · `data: (entity_id, ...other_fields)`
+
+### registration
+
+| Event | Topics | Data | Description |
+|-------|--------|------|-------------|
+| `player_registered` | event_name, wallet (Address) | player_id (u64) | New player profile created |
+| `scout_registered` | event_name, wallet (Address) | scout_id (u64) | New scout profile created |
+| `profile_updated` | event_name, wallet (Address) | player_id (u64) | Player updates IPFS content hashes |
+| `player_deregistered` | event_name, admin (Address) | player_id (u64) | Admin removes a player profile |
+| `player_deactivated` | event_name, admin (Address) | player_id (u64) | Admin soft-hides a player from filter results |
+| `player_reactivated` | event_name, admin (Address) | player_id (u64) | Admin restores a soft-hidden player to filter results |
+| `scout_verified` | event_name, wallet (Address) | scout_id (u64) | Admin verifies a scout |
+| `player_level_synced` | event_name, progress_contract (Address) | player_id (u64) | Progress contract syncs a player's level |
+| `admin_transfer_proposed` | event_name, old_admin (Address) | new_admin (Address) | Current admin proposes a replacement |
+| `admin_transferred` | event_name, old_admin (Address) | new_admin (Address) | Pending admin accepts control |
+
+### verification
+
+| Event | Topics | Data | Description |
+|-------|--------|------|-------------|
+| `contract_initialized` | event_name, admin (Address) | admin (Address) | Contract initialized |
+| `admin_transfer_proposed` | event_name, old_admin (Address) | new_admin (Address) | Current admin proposes a replacement |
+| `admin_transferred` | event_name, old_admin (Address) | new_admin (Address) | Pending admin accepts control |
+| `milestone_approved` | event_name, validator (Address) | player_id (u64), milestone_index (u32), description (String), evidence_hash (String) | Validator confirms a player achievement |
+| `validator_registered` | event_name, wallet (Address) | credentials (String) | New validator onboarded |
+| `validator_revoked` | event_name, admin (Address) | wallet (Address), reason (String) | Validator deactivated |
+| `validator_restored` | event_name, admin (Address) | wallet (Address) | Revoked validator re-activated |
+| `validator_transferred` | event_name, admin (Address) | old_wallet (Address), new_wallet (Address) | Validator identity migrated to new wallet |
+| `milestone_disputed` | event_name, player_wallet (Address) | player_id (u64), milestone_index (u32), reason (String) | Player disputes a milestone attribution |
+| `dispute_resolved` | event_name, admin (Address) | player_id (u64), milestone_index (u32), upheld (bool) | Admin resolves a milestone dispute |
+| `progress_contract_updated` | event_name, admin (Address) | progress_contract (Address) | Progress contract address re-wired |
+| `contract_paused` | event_name, admin (Address) | () | Circuit breaker engaged |
+| `contract_unpaused` | event_name, admin (Address) | () | Circuit breaker released |
+
+### progress
+
+| Event | Topics | Data | Description |
+|-------|--------|------|-------------|
+| `progress_updated` | event_name, updated_by (Address) | player_id (u64), old_level, new_level | Player advances one level |
+| `player_level_reset` | event_name, admin (Address) | player_id (u64), old_level, new_level | Admin resets a player's level |
+| `admin_transfer_proposed` | event_name, old_admin (Address) | new_admin (Address) | Current admin proposes a replacement |
+| `admin_transferred` | event_name, old_admin (Address) | new_admin (Address) | Pending admin accepts control |
+| `contract_paused` | event_name, admin (Address) | () | Circuit breaker engaged |
+| `contract_unpaused` | event_name, admin (Address) | () | Circuit breaker released |
+
+### scout_access
+
+| Event | Topics | Data | Description |
+|-------|--------|------|-------------|
+| `contract_initialized` | event_name, admin (Address) | admin (Address) | Contract initialized |
+| `scout_subscribed` | event_name, scout (Address) | tier (SubscriptionTier), fee_paid (i128) | Scout purchases a subscription |
+| `subscription_created` | event_name, scout (Address) | tier, subscribed_at (u64), expires_at (u64) | First-ever subscription for this scout |
+| `subscription_renewed` | event_name, scout (Address) | tier, subscribed_at (u64), expires_at (u64) | Existing subscription renewed or upgraded |
+| `player_contacted` | event_name, scout (Address) | player_id (u64), fee_paid (i128) | Scout unlocks player contact details |
+| `trial_offer_logged` | event_name, scout (Address) | player_id (u64) | Elite scout records a trial offer |
+| `fees_withdrawn` | event_name, admin (Address) | to (Address), amount (i128), timestamp (u64) | Admin withdraws accumulated fees |
+| `subscription_refunded` | event_name, scout (Address) | amount (i128) | Admin issues emergency refund to a scout |
+| `fee_config_updated` | event_name, admin (Address) | old_config (FeeConfig), new_config (FeeConfig) | Fee configuration changed |
+| `progress_contract_updated` | event_name, admin (Address) | progress_contract (Address) | Progress contract re-wired |
+| `admin_transfer_proposed` | event_name, old_admin (Address) | new_admin (Address) | Current admin proposes a replacement |
+| `admin_transferred` | event_name, old_admin (Address) | new_admin (Address) | Pending admin accepts control |
+| `contract_paused` | event_name, admin (Address) | () | Circuit breaker engaged |
+| `contract_unpaused` | event_name, admin (Address) | () | Circuit breaker released |
 
 ---
 

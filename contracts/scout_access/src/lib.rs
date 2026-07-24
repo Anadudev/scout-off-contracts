@@ -123,7 +123,7 @@ impl ScoutAccessContract {
 
     pub fn update_fee_config(env: Env, fee_config: FeeConfig) -> Result<(), ScoutAccessError> {
         Self::bump_instance_ttl(&env);
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         Self::validate_fee_config(&fee_config)?;
 
         let old_config = Self::fee_config(&env);
@@ -132,13 +132,13 @@ impl ScoutAccessContract {
             .instance()
             .set(&DataKey::FeeConfig, &fee_config);
 
-        events::fee_config_updated(&env, &old_config, &fee_config);
+        events::fee_config_updated(&env, &admin, &old_config, &fee_config);
         Ok(())
     }
 
     pub fn withdraw_fees(env: Env, to: Address) -> Result<i128, ScoutAccessError> {
         Self::bump_instance_ttl(&env);
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         let key = DataKey::AccumulatedFees;
         let fees: i128 = env.storage().instance().get(&key).unwrap_or(0i128);
         if fees == 0 {
@@ -148,7 +148,7 @@ impl ScoutAccessContract {
         let contract_addr = env.current_contract_address();
         token::Client::new(&env, &xlm).transfer(&contract_addr, &to, &fees);
         env.storage().instance().set(&key, &0i128);
-        events::fees_withdrawn(&env, &to, fees);
+        events::fees_withdrawn(&env, &admin, &to, fees);
         Ok(fees)
     }
 
@@ -186,11 +186,11 @@ impl ScoutAccessContract {
     /// link.
     pub fn set_progress_contract(env: Env, addr: Address) -> Result<(), ScoutAccessError> {
         Self::bump_instance_ttl(&env);
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage()
             .instance()
             .set(&DataKey::ProgressContract, &addr);
-        events::progress_contract_updated(&env, &addr);
+        events::progress_contract_updated(&env, &admin, &addr);
         Ok(())
     }
 
@@ -1453,7 +1453,11 @@ mod tests {
                 &env,
                 (
                     contract_id.clone(),
-                    (Symbol::new(&env, "fee_config_updated"),).into_val(&env),
+                    (
+                        Symbol::new(&env, "fee_config_updated"),
+                        _admin.clone(),
+                    )
+                        .into_val(&env),
                     (old_config, new_fees.clone()).into_val(&env)
                 )
             ]
@@ -2070,8 +2074,12 @@ mod tests {
                 &env,
                 (
                     contract_id.clone(),
-                    (Symbol::new(&env, events::ADMIN_TRANSFER_PROPOSED),).into_val(&env),
-                    (old_admin.clone(), stale_admin).into_val(&env),
+                    (
+                        Symbol::new(&env, events::ADMIN_TRANSFER_PROPOSED),
+                        old_admin.clone(),
+                    )
+                        .into_val(&env),
+                    stale_admin.clone().into_val(&env),
                 )
             ]
         );
@@ -2114,10 +2122,9 @@ mod tests {
                     (
                         Symbol::new(&env, events::ADMIN_TRANSFERRED),
                         old_admin.clone(),
-                        new_admin.clone()
                     )
                         .into_val(&env),
-                    ().into_val(&env),
+                    new_admin.clone().into_val(&env),
                 )
             ]
         );
@@ -2669,8 +2676,8 @@ mod tests {
                 &env,
                 (
                     contract_id.clone(),
-                    (Symbol::new(&env, "contract_paused"),).into_val(&env),
-                    admin.clone().into_val(&env)
+                    (Symbol::new(&env, "contract_paused"), admin.clone()).into_val(&env),
+                    ().into_val(&env)
                 )
             ]
         );
@@ -2758,7 +2765,11 @@ mod tests {
                 &env,
                 (
                     contract_id.clone(),
-                    (Symbol::new(&env, crate::events::PROGRESS_CONTRACT_UPDATED),).into_val(&env),
+                    (
+                        Symbol::new(&env, crate::events::PROGRESS_CONTRACT_UPDATED),
+                        _admin.clone(),
+                    )
+                        .into_val(&env),
                     progress_addr.clone().into_val(&env),
                 )
             ]
