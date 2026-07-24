@@ -89,6 +89,9 @@ impl VerificationContract {
             .set(&DataKey::ActiveValidatorCount, &0u32);
         env.storage()
             .instance()
+            .set(&DataKey::TotalValidatorCount, &0u32);
+        env.storage()
+            .instance()
             .set(&DataKey::ActiveDisputesCount, &0u32);
         events::contract_initialized(&env, &admin);
         Ok(())
@@ -192,15 +195,21 @@ impl VerificationContract {
             return Err(VerificationError::InvalidInput);
         }
 
+        // Check if we've reached the maximum number of validators
+        let total_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalValidatorCount)
+            .unwrap_or(0u32);
+        if total_count >= MAX_VALIDATORS {
+            return Err(VerificationError::ValidatorCapReached);
+        }
+
         let mut validator_vector: Vec<Address> = env
             .storage()
             .persistent()
             .get(&DataKey::ValidatorVector)
             .unwrap_or_else(|| Vec::new(&env));
-
-        if validator_vector.len() >= MAX_VALIDATORS {
-            return Err(VerificationError::ValidatorCapReached);
-        }
 
         if env
             .storage()
@@ -225,14 +234,24 @@ impl VerificationContract {
             .persistent()
             .set(&DataKey::ValidatorVector, &validator_vector);
 
-        let count: u32 = env
+        let active_count: u32 = env
             .storage()
             .instance()
             .get(&DataKey::ActiveValidatorCount)
             .unwrap_or(0u32);
         env.storage().instance().set(
             &DataKey::ActiveValidatorCount,
-            &count.checked_add(1).ok_or(VerificationError::Overflow)?,
+            &active_count.checked_add(1).ok_or(VerificationError::Overflow)?,
+        );
+
+        let total_count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalValidatorCount)
+            .unwrap_or(0u32);
+        env.storage().instance().set(
+            &DataKey::TotalValidatorCount,
+            &total_count.checked_add(1).ok_or(VerificationError::Overflow)?,
         );
 
         events::validator_registered(&env, &wallet, &validator.credentials);
@@ -384,11 +403,11 @@ impl VerificationContract {
         let current_count: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::ActiveValidatorCount)
+            .get(&DataKey::TotalValidatorCount)
             .unwrap_or(0u32);
         let batch_len = entries.len();
         if current_count
-            .checked_add(batch_len)
+            .checked_add(batch_len as u32)
             .ok_or(VerificationError::Overflow)?
             > MAX_VALIDATORS
         {
@@ -443,14 +462,25 @@ impl VerificationContract {
             validator_vector.push_back(wallet.clone());
 
             // Increment active validator count.
-            let count: u32 = env
+            let active_count: u32 = env
                 .storage()
                 .instance()
                 .get(&DataKey::ActiveValidatorCount)
                 .unwrap_or(0u32);
             env.storage().instance().set(
                 &DataKey::ActiveValidatorCount,
-                &count.checked_add(1).ok_or(VerificationError::Overflow)?,
+                &active_count.checked_add(1).ok_or(VerificationError::Overflow)?,
+            );
+
+            // Increment total validator count.
+            let total_count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalValidatorCount)
+                .unwrap_or(0u32);
+            env.storage().instance().set(
+                &DataKey::TotalValidatorCount,
+                &total_count.checked_add(1).ok_or(VerificationError::Overflow)?,
             );
 
             events::validator_registered(&env, &wallet, &validator.credentials);
@@ -859,10 +889,22 @@ impl VerificationContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    /// Returns the number of currently active (non-revoked) validators.
     pub fn get_active_validator_count(env: Env) -> u32 {
         env.storage()
             .instance()
             .get(&DataKey::ActiveValidatorCount)
+            .unwrap_or(0u32)
+    }
+
+    /// Returns the total number of registered validators (both active and revoked).
+    /// Useful as a pre-check before calling register_validator to anticipate
+    /// a possible ValidatorCapReached error, since the validator registry is capped
+    /// at MAX_VALIDATORS (100).
+    pub fn get_validator_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalValidatorCount)
             .unwrap_or(0u32)
     }
 
@@ -2046,6 +2088,51 @@ mod tests {
 
         // Revoking an already-revoked validator should not change the count
         client.revoke_validator(&v3, &reason);
+        assert_eq!(client.get_active_validator_count(), 1);
+    }
+
+    #[test]
+    fn test_get_validator_count() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Initial state: 0 total validators
+        assert_eq!(client.get_validator_count(), 0);
+        assert_eq!(client.get_validators().len(), 0);
+
+        let v1 = Address::generate(&env);
+        let v2 = Address::generate(&env);
+        let v3 = Address::generate(&env);
+
+        // Register 3 validators
+        client.register_validator(&v1, &String::from_str(&env, "Credentials 1"));
+        assert_eq!(client.get_validator_count(), 1);
+        assert_eq!(client.get_validators().len(), 1); // get_validators() returns active only, which matches total
+
+        client.register_validator(&v2, &String::from_str(&env, "Credentials 2"));
+        assert_eq!(client.get_validator_count(), 2);
+        assert_eq!(client.get_validators().len(), 2);
+
+        client.register_validator(&v3, &String::from_str(&env, "Credentials 3"));
+        assert_eq!(client.get_validator_count(), 3);
+        assert_eq!(client.get_validators().len(), 3);
+
+        // Revoke some validators - total count should remain 3, active count decreases
+        let reason: Option<String> = None;
+        client.revoke_validator(&v2, &reason);
+        assert_eq!(client.get_validator_count(), 3); // total still 3
+        assert_eq!(client.get_active_validator_count(), 2); // active decreased to 2
+        assert_eq!(client.get_validators().len(), 2); // get_validators() returns active only
+
+        client.revoke_validator(&v3, &reason);
+        assert_eq!(client.get_validator_count(), 3); // total still 3
+        assert_eq!(client.get_active_validator_count(), 1); // active decreased to 1
+        assert_eq!(client.get_validators().len(), 1); // get_validators() returns active only
+
+        // Revoking an already-revoked validator should not change either count
+        client.revoke_validator(&v3, &reason);
+        assert_eq!(client.get_validator_count(), 3);
         assert_eq!(client.get_active_validator_count(), 1);
     }
 

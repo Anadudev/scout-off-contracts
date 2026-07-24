@@ -95,6 +95,7 @@ pub enum DataKey {
     ValidatorPlayers(Address),
     MilestoneDispute(u64, u32),
     ActiveValidatorCount,
+    TotalValidatorCount,
     /// Evidence hash → bool for global uniqueness check.
     EvidenceUsed(String),
     ValidatorMilestones(Address),
