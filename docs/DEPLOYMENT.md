@@ -485,3 +485,11 @@ no snapshot — you must re-deploy from scratch:
 ./scripts/deploy.sh testnet
 ./scripts/initialize.sh testnet
 ```
+
+> **Note on partially-initialized contracts from a failed first attempt:**
+> If `deploy.sh` fails partway through (e.g. `registration` and `verification` succeed but
+> `progress` fails), the contracts that *did* deploy remain on-chain with their IDs. However,
+> since `.env.contracts` was never written, those contract IDs are not tracked anywhere.
+> **No manual cleanup, pausing, or abandonment steps are required** — simply re-run
+> `deploy.sh` and it will deploy a fresh set of contracts with new IDs. The orphaned contracts
+> from the failed attempt are inert and pose no risk; they can be left as-is.
