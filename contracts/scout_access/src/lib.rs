@@ -3334,6 +3334,134 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // #245 — Subscription downgrade guard edge cases
+    // -------------------------------------------------------------------------
+
+    /// A first-time subscriber with no prior subscription record must never
+    /// encounter the downgrade guard. The guard only activates when an
+    /// existing subscription is found in persistent storage. A new scout
+    /// subscribing to Basic, Pro, or Elite must always succeed regardless of
+    /// tier rank.
+    #[test]
+    fn test_first_time_subscriber_any_tier_bypasses_downgrade_guard() {
+        let (env, admin, xlm, _contract_id, client) = setup();
+
+        let scout_basic = Address::generate(&env);
+        let scout_pro = Address::generate(&env);
+        let scout_elite = Address::generate(&env);
+        mint_token(&env, &xlm, &admin, &scout_basic, 10_000_000);
+        mint_token(&env, &xlm, &admin, &scout_pro, 10_000_000);
+        mint_token(&env, &xlm, &admin, &scout_elite, 10_000_000);
+
+        // All three must succeed — no prior subscription means no guard.
+        assert!(client.try_subscribe(&scout_basic, &SubscriptionTier::Basic).is_ok());
+        assert!(client.try_subscribe(&scout_pro, &SubscriptionTier::Pro).is_ok());
+        assert!(client.try_subscribe(&scout_elite, &SubscriptionTier::Elite).is_ok());
+    }
+
+    /// A same-tier re-subscribe while the subscription is still active is not
+    /// a downgrade (tier_rank is equal, not less). The downgrade guard must
+    /// not fire. However, the UpgradeTooSoon guard (minimum 1-hour interval)
+    /// still applies for same-tier renewals — callers must wait at least
+    /// MIN_UPGRADE_INTERVAL_SECS before the same-tier renewal is accepted.
+    /// This test verifies the behaviour after the interval has elapsed.
+    #[test]
+    fn test_same_tier_resubscribe_before_expiry_after_interval_is_not_a_downgrade() {
+        let (env, admin, xlm, _contract_id, client) = setup();
+        let scout = Address::generate(&env);
+        mint_token(&env, &xlm, &admin, &scout, 100_000_000);
+
+        client.subscribe(&scout, &SubscriptionTier::Pro);
+
+        // Advance past the minimum upgrade interval but stay well within the
+        // 30-day subscription window.
+        env.ledger().with_mut(|l| {
+            l.timestamp += MIN_UPGRADE_INTERVAL_SECS + 1;
+        });
+
+        // A same-tier subscribe must succeed: tier_rank(Pro) == tier_rank(Pro)
+        // does not satisfy the `< existing.tier_rank` condition, so the
+        // downgrade guard is not triggered.
+        let result = client.try_subscribe(&scout, &SubscriptionTier::Pro);
+        assert!(
+            result.is_ok(),
+            "same-tier re-subscribe after interval must not return SubscriptionDowngradeNotAllowed"
+        );
+        let sub = client.get_subscription(&scout);
+        assert_eq!(sub.tier, SubscriptionTier::Pro);
+    }
+
+    /// At the exact expiry timestamp (now == expires_at) the condition
+    /// `now <= existing.expires_at` is true, so the downgrade guard still
+    /// applies. A downgrade attempted at exactly the expiry ledger timestamp
+    /// must return SubscriptionDowngradeNotAllowed, not succeed silently.
+    ///
+    /// This is intentional: the subscription is considered active up to and
+    /// including its final second. Callers must wait for a timestamp strictly
+    /// greater than expires_at before attempting a lower-tier subscription.
+    ///
+    /// This behaviour is documented in CONTRACT_REFERENCE.md § subscribe
+    /// (Downgrade guard boundary).
+    #[test]
+    fn test_downgrade_blocked_at_exact_expiry_timestamp() {
+        let (env, admin, xlm, _contract_id, client) = setup();
+        let scout = Address::generate(&env);
+        mint_token(&env, &xlm, &admin, &scout, 100_000_000);
+
+        client.subscribe(&scout, &SubscriptionTier::Elite);
+
+        // Retrieve the subscription so we know the exact expires_at value.
+        let sub = client.get_subscription(&scout);
+        let expires_at = sub.expires_at;
+
+        // Set ledger timestamp to exactly expires_at — the boundary value.
+        env.ledger().with_mut(|l| {
+            l.timestamp = expires_at;
+        });
+
+        // At exactly expires_at the subscription is still considered active
+        // (now <= expires_at), so a downgrade must be blocked.
+        let result = client.try_subscribe(&scout, &SubscriptionTier::Basic);
+        assert_eq!(
+            result,
+            Err(Ok(ScoutAccessError::SubscriptionDowngradeNotAllowed)),
+            "downgrade at exactly expires_at must still be blocked (now <= expires_at is true)"
+        );
+
+        // One second later (now > expires_at) the subscription is expired
+        // and the downgrade must succeed.
+        env.ledger().with_mut(|l| {
+            l.timestamp = expires_at + 1;
+        });
+        let result_after = client.try_subscribe(&scout, &SubscriptionTier::Basic);
+        assert!(
+            result_after.is_ok(),
+            "downgrade one second after expires_at must succeed (subscription is expired)"
+        );
+    }
+
+    /// Verify that tier_rank comparison is ordinal, not name-based. Pro has
+    /// rank 2 and Basic has rank 1, so Pro→Basic is a downgrade (rank 2 > 1).
+    /// This test makes the rank ordering explicit and guards against any future
+    /// refactoring that reorders the SubscriptionTier enum variants.
+    #[test]
+    fn test_downgrade_pro_rank_to_basic_rank_is_blocked_while_active() {
+        let (env, admin, xlm, _contract_id, client) = setup();
+        let scout = Address::generate(&env);
+        mint_token(&env, &xlm, &admin, &scout, 100_000_000);
+
+        client.subscribe(&scout, &SubscriptionTier::Pro);
+
+        // No time advance — subscription is active; tier_rank(Basic)=1 < tier_rank(Pro)=2.
+        let result = client.try_subscribe(&scout, &SubscriptionTier::Basic);
+        assert_eq!(
+            result,
+            Err(Ok(ScoutAccessError::SubscriptionDowngradeNotAllowed)),
+            "Pro(rank=2) → Basic(rank=1) must be blocked while the Pro subscription is active"
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // pay_to_contact — precedence tests
     // -------------------------------------------------------------------------
 
