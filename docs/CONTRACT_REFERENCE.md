@@ -1745,6 +1745,17 @@ true, the first matching check in this list wins):
 > can fire per call. A downgrade attempt is evaluated before the timing guard,
 > so a simultaneous downgrade-too-soon scenario returns `SubscriptionDowngradeNotAllowed`.
 
+**Downgrade guard edge cases** (see issue #245 and tests in `scout_access/src/lib.rs`):
+
+| Scenario | Behaviour |
+|----------|-----------|
+| First-time subscriber (no prior subscription record) | Guard is never reached; any tier may be chosen freely |
+| Same-tier re-subscribe while active, after ≥ 1-hour interval | Allowed — `tier_rank(X) < tier_rank(X)` is false, so not a downgrade. `UpgradeTooSoon` still applies within the first hour |
+| Same-tier re-subscribe within the first hour | Blocked by `UpgradeTooSoon` (17) — the guard's interval applies to same-tier renewals in addition to upgrades |
+| Re-subscribe at exactly `expires_at` timestamp | **Blocked** — the condition is `now <= expires_at`, so the subscription is considered active through its final second. Wait for `now > expires_at` |
+| Re-subscribe one second after `expires_at` | Allowed — subscription is expired; any lower tier is permitted |
+| Pro (rank 2) → Basic (rank 1) while active | Blocked — `tier_rank(Basic)=1 < tier_rank(Pro)=2` triggers `SubscriptionDowngradeNotAllowed` |
+
 ```bash
 stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
   -- subscribe \
