@@ -131,11 +131,68 @@ chmod +x testnet/seed.sh
 
 ### 6. Run the database migration
 
-Copy `migrations/001_initial_schema.sql` to your backend repo and run it against PostgreSQL:
+Copy the migration files to your backend repo and run them against PostgreSQL in order:
 
 ```bash
 psql $DATABASE_URL -f migrations/001_initial_schema.sql
+psql $DATABASE_URL -f migrations/002_cursor_upsert_helper.sql
 ```
+
+`001_initial_schema.sql` creates all fourteen tables and seeds the `indexer_cursor`
+row so the indexer can `SELECT` it on first startup without encountering an empty
+result. Every `CREATE TABLE` and `CREATE INDEX` uses `IF NOT EXISTS` and the seed
+`INSERT` uses `ON CONFLICT DO NOTHING`, making both files safe to re-run against an
+already-migrated database.
+
+`002_cursor_upsert_helper.sql` adds the `advance_indexer_cursor(p_ledger BIGINT)`
+helper function. Call it from the indexer after processing each batch of Horizon
+events instead of hand-writing the `ON CONFLICT DO UPDATE` clause each time:
+
+```sql
+SELECT advance_indexer_cursor(42391);
+```
+
+The function updates `last_ledger` only when the supplied value is greater than the
+stored value, so replaying an old batch never accidentally rewinds the cursor.
+
+### Resetting the Indexer Cursor
+
+To replay all on-chain events from genesis — for example after a full database wipe,
+a failed reindex, or when setting up a new environment from scratch — reset the
+cursor to ledger 0 before restarting the indexer:
+
+```sql
+-- 1. Stop the indexer process first.
+
+-- 2. Optionally truncate derived tables to avoid duplicate-key errors
+--    when events are reprocessed (order matters due to foreign keys):
+TRUNCATE TABLE
+    milestone_disputes,
+    milestones,
+    trial_offers,
+    contact_records,
+    scout_subscriptions,
+    fee_config_history,
+    fee_withdrawals,
+    admin_transfers,
+    validator_history,
+    player_level_history,
+    players,
+    scouts,
+    validators
+CASCADE;
+
+-- 3. Reset the cursor.
+UPDATE indexer_cursor
+SET last_ledger = 0,
+    updated_at  = NOW()
+WHERE id = 1;
+
+-- 4. Restart the indexer — it will stream events from ledger 0.
+```
+
+If you only want to re-process events from a specific ledger (partial replay),
+replace `0` with the desired starting ledger sequence number.
 
 ## Mainnet checklist
 
