@@ -927,6 +927,24 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID -- get_active_validator_c
 
 ---
 
+#### `get_validator_count() -> u32`
+
+Return the total number of registered validators (both active and revoked).
+Useful as a pre-check before calling `register_validator` to anticipate a
+possible `ValidatorCapReached` error, since the validator registry is capped at
+100 addresses total.
+
+| | |
+|---|---|
+| **Auth** | None |
+| **Errors** | None |
+
+```bash
+stellar contract invoke --id $VERIFICATION_CONTRACT_ID -- get_validator_count
+```
+
+---
+
 #### `get_active_disputes_count() -> u32`
 
 Return the number of currently active (unresolved) disputes across all
