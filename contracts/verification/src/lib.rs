@@ -150,7 +150,7 @@ impl VerificationContract {
         env: Env,
         progress_contract: Address,
     ) -> Result<(), VerificationError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         if env.storage().instance().has(&DataKey::ProgressContractSet) {
             return Err(VerificationError::AlreadyConfigured);
         }
@@ -160,7 +160,7 @@ impl VerificationContract {
         env.storage()
             .instance()
             .set(&DataKey::ProgressContractSet, &true);
-        events::progress_contract_updated(&env, &progress_contract);
+        events::progress_contract_updated(&env, &admin, &progress_contract);
         Ok(())
     }
 
@@ -170,11 +170,11 @@ impl VerificationContract {
         env: Env,
         progress_contract: Address,
     ) -> Result<(), VerificationError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         env.storage()
             .instance()
             .set(&DataKey::ProgressContract, &progress_contract);
-        events::progress_contract_updated(&env, &progress_contract);
+        events::progress_contract_updated(&env, &admin, &progress_contract);
         Ok(())
     }
 
@@ -282,7 +282,7 @@ impl VerificationContract {
         wallet: Address,
         reason: Option<String>,
     ) -> Result<(), VerificationError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
 
         if let Some(ref r) = reason {
             if r.len() > 128 {
@@ -329,7 +329,7 @@ impl VerificationContract {
             .persistent()
             .set(&DataKey::ValidatorVector, &new_vector);
 
-        events::validator_revoked(&env, &wallet, &reason.unwrap_or(String::from_str(&env, "")));
+        events::validator_revoked(&env, &admin, &wallet, &reason.unwrap_or(String::from_str(&env, "")));
         Ok(())
     }
 
@@ -342,7 +342,7 @@ impl VerificationContract {
         wallets: Vec<Address>,
         reason: Option<String>,
     ) -> Result<(), VerificationError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
 
         if let Some(ref r) = reason {
             if r.len() > 128 {
@@ -381,7 +381,7 @@ impl VerificationContract {
                 .persistent()
                 .set(&DataKey::ValidatorVector, &new_vector);
 
-            events::validator_revoked(&env, &wallet, &reason_str);
+            events::validator_revoked(&env, &admin, &wallet, &reason_str);
         }
 
         Ok(())
@@ -500,7 +500,7 @@ impl VerificationContract {
     ///
     /// Returns `ValidatorNotFound` if the wallet has never been registered.
     pub fn restore_validator(env: Env, wallet: Address) -> Result<(), VerificationError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
 
         let mut validator: Validator = env
             .storage()
@@ -526,7 +526,7 @@ impl VerificationContract {
             );
         }
 
-        events::validator_restored(&env, &wallet);
+        events::validator_restored(&env, &admin, &wallet);
         Ok(())
     }
 
@@ -544,7 +544,7 @@ impl VerificationContract {
         old_wallet: Address,
         new_wallet: Address,
     ) -> Result<(), VerificationError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
 
         // Ensure old wallet is registered
         let old_validator: Validator = env
@@ -615,7 +615,7 @@ impl VerificationContract {
             .persistent()
             .set(&DataKey::ValidatorVector, &validator_vector);
 
-        events::validator_transferred(&env, &old_wallet, &new_wallet);
+        events::validator_transferred(&env, &admin, &old_wallet, &new_wallet);
         Ok(())
     }
 
@@ -1101,7 +1101,7 @@ impl VerificationContract {
             &count.checked_add(1).ok_or(VerificationError::Overflow)?,
         );
 
-        events::milestone_disputed(&env, player_id, milestone_index, &reason);
+        events::milestone_disputed(&env, &player_wallet, player_id, milestone_index, &reason);
         Ok(())
     }
 
@@ -1118,7 +1118,7 @@ impl VerificationContract {
     ) -> Result<(), VerificationError> {
         Self::bump_instance_ttl(&env);
         Self::require_not_paused(&env)?;
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
 
         let dispute_key = DataKey::MilestoneDispute(player_id, milestone_index);
         let mut dispute: MilestoneDispute = env
@@ -1145,7 +1145,7 @@ impl VerificationContract {
             &count.checked_sub(1).ok_or(VerificationError::Overflow)?,
         );
 
-        events::dispute_resolved(&env, player_id, milestone_index, upheld);
+        events::dispute_resolved(&env, &admin, player_id, milestone_index, upheld);
         Ok(())
     }
 
@@ -1254,8 +1254,12 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, events::ADMIN_TRANSFER_PROPOSED),).into_val(&env),
-                    (old_admin.clone(), stale_admin).into_val(&env),
+                    (
+                        Symbol::new(&env, events::ADMIN_TRANSFER_PROPOSED),
+                        old_admin.clone(),
+                    )
+                        .into_val(&env),
+                    stale_admin.clone().into_val(&env),
                 )
             ]
         );
@@ -1295,8 +1299,12 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, events::ADMIN_TRANSFERRED),).into_val(&env),
-                    (old_admin, new_admin.clone()).into_val(&env),
+                    (
+                        Symbol::new(&env, events::ADMIN_TRANSFERRED),
+                        old_admin.clone(),
+                    )
+                        .into_val(&env),
+                    new_admin.clone().into_val(&env),
                 )
             ]
         );
@@ -1851,8 +1859,12 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, crate::events::CONTRACT_PAUSED),).into_val(&env),
-                    admin.clone().into_val(&env)
+                    (
+                        Symbol::new(&env, crate::events::CONTRACT_PAUSED),
+                        admin.clone(),
+                    )
+                        .into_val(&env),
+                    ().into_val(&env)
                 )
             ]
         );
@@ -1865,8 +1877,12 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, crate::events::CONTRACT_UNPAUSED),).into_val(&env),
-                    admin.clone().into_val(&env)
+                    (
+                        Symbol::new(&env, crate::events::CONTRACT_UNPAUSED),
+                        admin.clone(),
+                    )
+                        .into_val(&env),
+                    ().into_val(&env)
                 )
             ]
         );
@@ -1912,7 +1928,11 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, crate::events::PROGRESS_CONTRACT_UPDATED),).into_val(&env),
+                    (
+                        Symbol::new(&env, crate::events::PROGRESS_CONTRACT_UPDATED),
+                        admin.clone(),
+                    )
+                        .into_val(&env),
                     addr.into_val(&env)
                 )
             ]
@@ -1994,8 +2014,12 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, crate::events::CONTRACT_INITIALIZED),).into_val(&env),
-                    admin.into_val(&env)
+                    (
+                        Symbol::new(&env, crate::events::CONTRACT_INITIALIZED),
+                        admin.clone(),
+                    )
+                        .into_val(&env),
+                    ().into_val(&env)
                 )
             ]
         );
@@ -2568,11 +2592,10 @@ mod tests {
                     client.address.clone(),
                     (
                         Symbol::new(&env, crate::events::DISPUTE_RESOLVED),
-                        2u64,
-                        1u32
+                        admin.clone(),
                     )
                         .into_val(&env),
-                    false.into_val(&env)
+                    (2u64, 1u32, false).into_val(&env)
                 )
             ]
         );
@@ -2605,8 +2628,8 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, "milestone_disputed"), 2u64, 1u32).into_val(&env),
-                    reason.into_val(&env)
+                    (Symbol::new(&env, "milestone_disputed"), player_wallet.clone()).into_val(&env),
+                    (2u64, 1u32, reason.clone()).into_val(&env)
                 )
             ]
         );

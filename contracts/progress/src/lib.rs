@@ -198,7 +198,7 @@ impl ProgressContract {
             player_id,
             old_level.clone(),
             target_level.clone(),
-            admin,
+            admin.clone(),
             0,
         )?;
         env.storage()
@@ -223,7 +223,7 @@ impl ProgressContract {
             }
         }
 
-        events::player_level_reset(&env, player_id, &old_level, &target_level);
+        events::player_level_reset(&env, &admin, player_id, &old_level, &target_level);
         Ok(())
     }
 
@@ -1008,8 +1008,9 @@ mod tests {
                     vec![
                         &env,
                         Symbol::new(&env, events::ADMIN_TRANSFER_PROPOSED).into_val(&env),
+                        old_admin.clone().into_val(&env),
                     ],
-                    (old_admin.clone(), stale_admin).into_val(&env),
+                    stale_admin.clone().into_val(&env),
                 )
             ]
         );
@@ -1053,8 +1054,9 @@ mod tests {
                     vec![
                         &env,
                         Symbol::new(&env, events::ADMIN_TRANSFERRED).into_val(&env),
+                        old_admin.clone().into_val(&env),
                     ],
-                    (old_admin, new_admin.clone()).into_val(&env),
+                    new_admin.clone().into_val(&env),
                 )
             ]
         );
@@ -1254,21 +1256,29 @@ mod tests {
         // The event is still emitted — checked immediately, since `events().all()`
         // only reflects the most recent contract invocation and the read calls
         // below are themselves separate invocations.
+        // We verify shape (event name + payload) without asserting the exact
+        // admin address, since the setup helper does not expose it.
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let (_, topics_val, data_val) = events.get(0).unwrap();
+        // Unpack topics as a Vec<Val>; first element is the Symbol.
+        let topics: soroban_sdk::Vec<soroban_sdk::Val> =
+            soroban_sdk::Vec::try_from_val(&env, &topics_val).unwrap();
         assert_eq!(
-            env.events().all(),
-            vec![
-                &env,
-                (
-                    client.address.clone(),
-                    (Symbol::new(&env, crate::events::PLAYER_LEVEL_RESET),).into_val(&env),
-                    (
-                        player_id,
-                        ProgressLevel::PerformanceMilestones,
-                        ProgressLevel::Unverified,
-                    )
-                        .into_val(&env),
-                ),
-            ]
+            topics.get(0).unwrap(),
+            Symbol::new(&env, crate::events::PLAYER_LEVEL_RESET).into_val(&env)
+        );
+        // Second topic element is the actor (admin address) — just assert it is present.
+        assert_eq!(topics.len(), 2);
+        // Data: (player_id, old_level, target_level)
+        assert_eq!(
+            data_val,
+            (
+                player_id,
+                ProgressLevel::PerformanceMilestones,
+                ProgressLevel::Unverified,
+            )
+                .into_val(&env)
         );
 
         assert_eq!(client.get_level(&player_id), ProgressLevel::Unverified);
@@ -1492,8 +1502,8 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, "contract_paused"),).into_val(&env),
-                    admin.clone().into_val(&env)
+                    (Symbol::new(&env, "contract_paused"), admin.clone()).into_val(&env),
+                    ().into_val(&env)
                 )
             ]
         );
@@ -1506,8 +1516,8 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, "contract_unpaused"),).into_val(&env),
-                    admin.clone().into_val(&env)
+                    (Symbol::new(&env, "contract_unpaused"), admin.clone()).into_val(&env),
+                    ().into_val(&env)
                 )
             ]
         );
