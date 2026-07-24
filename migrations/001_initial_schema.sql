@@ -205,6 +205,23 @@ CREATE INDEX IF NOT EXISTS idx_admin_transfers_contract ON admin_transfers (cont
 
 -- -----------------------------------------------------------------------
 -- Event cursor (indexer checkpoint)
+-- Single-row table that records the last Horizon ledger sequence the
+-- backend indexer has fully processed.  The indexer SELECTs this row
+-- on startup and uses last_ledger as the starting point for its next
+-- Horizon events query.
+--
+-- Cursor reset procedure (event replay from genesis):
+--   To replay all on-chain events from the beginning (e.g. after a full
+--   database wipe or to reindex a new environment), reset the cursor to 0:
+--
+--     UPDATE indexer_cursor SET last_ledger = 0, updated_at = NOW()
+--     WHERE id = 1;
+--
+--   The indexer will then restart from ledger 0 on its next poll cycle.
+--   Truncate any derived tables (players, milestones, etc.) before
+--   replaying to avoid duplicate-key errors from re-processing events.
+--   See docs/DEPLOYMENT.md — Resetting the Indexer Cursor for the full
+--   step-by-step procedure.
 -- -----------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS indexer_cursor (
     id              INTEGER      PRIMARY KEY DEFAULT 1,  -- single row
@@ -213,5 +230,9 @@ CREATE TABLE IF NOT EXISTS indexer_cursor (
     CHECK (id = 1)
 );
 
-INSERT INTO indexer_cursor (id, last_ledger) VALUES (1, 0)
+-- Seed the single cursor row so the indexer can SELECT it on first startup
+-- without encountering an empty result.  ON CONFLICT DO NOTHING makes this
+-- safe to re-run against an already-migrated database.
+INSERT INTO indexer_cursor (id, last_ledger, updated_at)
+VALUES (1, 0, NOW())
 ON CONFLICT (id) DO NOTHING;
