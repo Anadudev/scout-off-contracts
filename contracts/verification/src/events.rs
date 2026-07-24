@@ -115,3 +115,37 @@ pub fn dispute_resolved(env: &Env, player_id: u64, milestone_index: u32, upheld:
         upheld,
     );
 }
+
+/// Emitted when a milestone is recorded but level advancement is skipped because
+/// the player is already at the maximum level (EliteTier).  The milestone itself
+/// is still persisted; only the cross-contract advance_level call is omitted.
+/// `reason` is always "AlreadyAtMaxLevel".
+pub fn level_advancement_skipped(env: &Env, player_id: u64, reason: &String) {
+    env.events().publish(
+        (Symbol::new(env, "level_advancement_skipped"), player_id),
+        reason.clone(),
+    );
+}
+
+/// Emitted when level advancement is skipped because the progress contract
+/// address has not been configured.  Common during testing without a full
+/// deployment.  In production this indicates a missing wiring step and the
+/// indexer should alert on it.  The milestone is still persisted.
+pub fn progress_contract_not_set(env: &Env, player_id: u64) {
+    env.events().publish(
+        (Symbol::new(env, "progress_contract_not_set"), player_id),
+        (),
+    );
+}
+
+/// Emitted just before a ProgressCallFailed error is returned, so the
+/// off-chain indexer can detect the failure by scanning transaction receipts.
+/// Because ProgressCallFailed aborts the entire transaction, this event only
+/// appears in the diagnostic stream — it is not committed to the ledger.
+/// Payload is the raw error discriminant returned by try_advance_level.
+pub fn progress_call_failed(env: &Env, player_id: u64, error_code: u32) {
+    env.events().publish(
+        (Symbol::new(env, "progress_call_failed"), player_id),
+        error_code,
+    );
+}

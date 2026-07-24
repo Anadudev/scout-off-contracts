@@ -822,22 +822,44 @@ impl VerificationContract {
         );
 
         // Cross-contract call: advance the player's progress level.
-        // This is a best-effort call — if the progress contract is not set
-        // (e.g. during testing without a full deployment), we skip it.
-        // In production, always call set_progress_contract before going live.
+        // If the progress contract is not wired (e.g. during testing without a
+        // full deployment) we emit a diagnostic event and skip advancement so
+        // the off-chain indexer can detect the missing wiring.  In production,
+        // always call set_progress_contract before going live.
         if let Some(progress_addr) = env
             .storage()
             .instance()
             .get::<DataKey, Address>(&DataKey::ProgressContract)
         {
             let progress_client = progress_contract::Client::new(&env, &progress_addr);
-            // AlreadyAtMaxLevel (6) is acceptable — milestone still recorded.
-            // Any other error propagates as ProgressCallFailed.
             match progress_client.try_advance_level(&validator_wallet, &player_id, &next_index) {
                 Ok(_) => {}
-                Err(Ok(progress_contract::ProgressError::AlreadyAtMaxLevel)) => {}
-                Err(_) => return Err(VerificationError::ProgressCallFailed),
+                // AlreadyAtMaxLevel is acceptable — milestone is still recorded.
+                // Emit a diagnostic event so the indexer can observe the skip.
+                Err(Ok(progress_contract::ProgressError::AlreadyAtMaxLevel)) => {
+                    events::level_advancement_skipped(
+                        &env,
+                        player_id,
+                        &soroban_sdk::String::from_str(&env, "AlreadyAtMaxLevel"),
+                    );
+                }
+                // Any other error: emit a diagnostic event then abort.
+                // The event appears in the diagnostic stream only (the
+                // transaction is reverted), but indexers scanning receipts
+                // can use it to alert without parsing raw error codes.
+                Err(e) => {
+                    let code = match &e {
+                        Ok(pe) => *pe as u32,
+                        Err(_) => 0u32,
+                    };
+                    events::progress_call_failed(&env, player_id, code);
+                    return Err(VerificationError::ProgressCallFailed);
+                }
             }
+        } else {
+            // Progress contract not configured — emit diagnostic so the indexer
+            // can alert on missing wiring rather than silently swallowing it.
+            events::progress_contract_not_set(&env, player_id);
         }
 
         Ok(next_index)

@@ -143,3 +143,25 @@ pub fn fee_config_updated(
         (old_config.clone(), new_config.clone()),
     );
 }
+
+/// Emitted when confirm_trial_offer is skipped because the progress contract
+/// address has not been configured.  Indicates missing wiring; the indexer
+/// should alert on this event in production.
+pub fn progress_contract_not_set(env: &Env, player_id: u64) {
+    env.events().publish(
+        (Symbol::new(env, "progress_contract_not_set"), player_id),
+        (),
+    );
+}
+
+/// Emitted just before a ProgressCallFailed error is returned from
+/// confirm_trial_offer, so indexers scanning transaction receipts can detect
+/// the failure without parsing raw error codes.  Because ProgressCallFailed
+/// aborts the whole transaction, this event only appears in the diagnostic
+/// stream — not in committed ledger events.
+pub fn progress_call_failed(env: &Env, player_id: u64, error_code: u32) {
+    env.events().publish(
+        (Symbol::new(env, "progress_call_failed"), player_id),
+        error_code,
+    );
+}
