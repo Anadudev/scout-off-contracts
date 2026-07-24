@@ -1134,6 +1134,16 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID -- version
 | `contract_paused` | event_name | admin (Address) | Circuit breaker engaged |
 | `contract_unpaused` | event_name | admin (Address) | Circuit breaker released |
 
+#### Diagnostic Events (verification)
+
+The following events are emitted for observability when level advancement is skipped or fails. They allow the off-chain indexer to detect silent failures without scanning every transaction receipt for error codes.
+
+| Event | Topics | Data | Description |
+|-------|--------|------|-------------|
+| `level_advancement_skipped` | event_name, player_id (u64) | reason (String) | Milestone recorded but level not advanced because player is already at `EliteTier`. `reason` is always `"AlreadyAtMaxLevel"`. Committed to the ledger. |
+| `progress_contract_not_set` | event_name, player_id (u64) | `()` | Level advancement skipped because the progress contract address has not been configured. Indicates missing wiring — alert in production. Committed to the ledger. |
+| `progress_call_failed` | event_name, player_id (u64) | error_code (u32) | Emitted just before `ProgressCallFailed` is returned. Because that error aborts the entire transaction, this event only appears in the **diagnostic stream** (transaction receipt), not in committed ledger events. `error_code` is the raw error discriminant from `try_advance_level`. |
+
 ---
 
 ## progress
@@ -2222,6 +2232,15 @@ stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID -- version
 | `admin_transferred` | event_name | (old_admin: Address, new_admin: Address) | Admin rights rotated |
 | `contract_paused` | event_name | admin (Address) | Circuit breaker engaged |
 | `contract_unpaused` | event_name | admin (Address) | Circuit breaker released |
+
+#### Diagnostic Events (scout_access)
+
+The following events are emitted from `confirm_trial_offer` when level advancement via the progress contract is skipped or fails.
+
+| Event | Topics | Data | Description |
+|-------|--------|------|-------------|
+| `progress_contract_not_set` | event_name, player_id (u64) | `()` | `confirm_trial_offer` could not advance the player's level because the progress contract address has not been wired. Emitted before returning `InvalidInput`. Indicates missing wiring — alert in production. Committed to the ledger. |
+| `progress_call_failed` | event_name, player_id (u64) | error_code (u32) | Emitted just before `ProgressCallFailed` is returned from `confirm_trial_offer`. Because that error aborts the entire transaction, this event only appears in the **diagnostic stream** (transaction receipt), not in committed ledger events. `error_code` is the raw error discriminant from `try_advance_level`. |
 
 ---
 

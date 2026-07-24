@@ -825,14 +825,36 @@ impl ScoutAccessContract {
         }
 
         // Call progress contract to advance level (using the index as milestone reference)
-        let progress_addr = env
+        let progress_addr = match env
             .storage()
             .instance()
-            .get(&DataKey::ProgressContract)
-            .ok_or(ScoutAccessError::InvalidInput)?;
-        progress_contract::Client::new(&env, &progress_addr)
-            .advance_level(&env, &env.current_contract_address(), player_id, index)
-            .map_err(|_| ScoutAccessError::ProgressCallFailed)?;
+            .get::<DataKey, soroban_sdk::Address>(&DataKey::ProgressContract)
+        {
+            Some(addr) => addr,
+            None => {
+                // Progress contract not configured — emit diagnostic so the indexer
+                // can alert on missing wiring rather than returning an opaque error.
+                events::progress_contract_not_set(&env, player_id);
+                return Err(ScoutAccessError::InvalidInput);
+            }
+        };
+        let progress_client = progress_contract::Client::new(&env, &progress_addr);
+        match progress_client.try_advance_level(
+            &env.current_contract_address(),
+            &player_id,
+            &index,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                // Extract numeric error code from the contract error, if any.
+                let code = match &e {
+                    Ok(pe) => *pe as u32,
+                    Err(_) => 0u32,
+                };
+                events::progress_call_failed(&env, player_id, code);
+                return Err(ScoutAccessError::ProgressCallFailed);
+            }
+        }
 
         // Cleanup escrow after successful confirmation
         env.storage()
