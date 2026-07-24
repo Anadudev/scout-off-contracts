@@ -26,6 +26,8 @@ Use the structure below for upcoming MINOR or MAJOR contract changes:
 - Summary: a concise description of the externally observable change
 - Classification: `Breaking (MAJOR)` or `Non-breaking (MINOR)`
 
+> **Breaking-change classification rules:** See [docs/VERSIONING.md — What Constitutes a Breaking Change](VERSIONING.md#what-constitutes-a-breaking-change) for the full criteria (storage layout changes, function signature changes, error code renumbering, event schema changes, cross-contract interface changes).
+
 ## v0.1.0 - 2025
 
 - Version: `v0.1.0`
