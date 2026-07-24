@@ -4,6 +4,8 @@
 
 <!-- Note: XLM token address source of truth -->
 > **Note:** The `xlm_token_address` values in `config/mainnet.json` and `config/testnet.json` (and the corresponding entry in `.env.example`) are sourced from Stellar's official SAC registry. The team member responsible for verifying and updating these addresses before each deployment is the **Release Engineer**. Ensure the addresses match the latest SAC documentation before deploying.
+>
+> **Full field reference:** See [`docs/CONFIG_REFERENCE.md`](CONFIG_REFERENCE.md) for a complete description of every field in `config/testnet.json` and `config/mainnet.json`, including where each value is used and mainnet deployment requirements.
 
 - Rust + `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
 - Stellar CLI: https://developers.stellar.org/docs/tools/developer-tools/cli/install-stellar-cli
@@ -493,3 +495,7 @@ no snapshot — you must re-deploy from scratch:
 > **No manual cleanup, pausing, or abandonment steps are required** — simply re-run
 > `deploy.sh` and it will deploy a fresh set of contracts with new IDs. The orphaned contracts
 > from the failed attempt are inert and pose no risk; they can be left as-is.
+>
+> **Explicitly:** there is no need to call `pause_contract` on the orphaned contracts, no need
+> to manually abandon them, and no risk of them interfering with the fresh deployment. They are
+> simply unused contract instances that will never be wired or called.
