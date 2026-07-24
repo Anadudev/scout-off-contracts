@@ -117,6 +117,7 @@ When adding new entries to the Version History table:
 - **Contract Scope**: All four contracts (`registration`, `verification`, `progress`, `scout_access`) were initially released together at `v0.1.0`. Future releases may update all contracts in lockstep or target specific contracts individually. Specify the scope in the **Version** column (e.g., `v0.2.0 (all)` or `v0.2.0 (verification)`).
 - **SemVer Bump Type**: Explicitly classify each change as `MAJOR` (breaking storage/API change), `MINOR` (backward-compatible feature/event/error addition), or `PATCH` (backward-compatible bug fix/gas optimization) in the **Type** column.
 - **Summary**: Provide a concise summary of changes, explicitly calling out breaking changes if `MAJOR`.
+- **Cross-reference**: Every entry must mirror the corresponding entry in [CHANGELOG.md](CHANGELOG.md) — keep both files in sync.
 
 | Version | Date | Type | Summary |
 |---------|------|------|---------|
