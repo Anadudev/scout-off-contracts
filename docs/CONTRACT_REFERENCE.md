@@ -104,8 +104,9 @@ Returns the assigned `player_id`.
 | **Errors** | `AlreadyRegistered` · `InvalidInput` (field too long or bad hash count) · `NotInitialized` · `ContractPaused` · `Overflow` |
 
 Constraints:
-- `position`, `region`, and `nationality` max 64 bytes each
+- `position` and `nationality` max 64 bytes each; `region` max 100 bytes
 - `ipfs_hashes` must contain 1–10 entries
+- Player vitals (`position`, `region`, `nationality`, `age`) are write-once at registration time and immutable post-registration. Length limits are strictly enforced during `register_player` and cannot be bypassed via post-registration mutation.
 
 ```bash
 stellar contract invoke --id $REGISTRATION_CONTRACT_ID \
@@ -119,7 +120,7 @@ stellar contract invoke --id $REGISTRATION_CONTRACT_ID \
 
 #### `update_profile(player_id: u64, ipfs_hashes: Vec<String>) -> Result<(), ScoutChainError>`
 
-Replace a player's IPFS content hashes (highlight reels, photos).
+Replace a player's IPFS content hashes (highlight reels, photos). Note that `update_profile` accepts only `ipfs_hashes` and does not take or modify `PlayerVitals` fields. Because player vitals are write-once at registration time and immutable post-registration, length validation runs exclusively during `register_player` and no post-registration update path exists to set or modify vitals.
 
 | | |
 |---|---|
