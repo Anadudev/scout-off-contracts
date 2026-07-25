@@ -241,7 +241,9 @@ impl VerificationContract {
             .unwrap_or(0u32);
         env.storage().instance().set(
             &DataKey::ActiveValidatorCount,
-            &active_count.checked_add(1).ok_or(VerificationError::Overflow)?,
+            &active_count
+                .checked_add(1)
+                .ok_or(VerificationError::Overflow)?,
         );
 
         let total_count: u32 = env
@@ -251,7 +253,9 @@ impl VerificationContract {
             .unwrap_or(0u32);
         env.storage().instance().set(
             &DataKey::TotalValidatorCount,
-            &total_count.checked_add(1).ok_or(VerificationError::Overflow)?,
+            &total_count
+                .checked_add(1)
+                .ok_or(VerificationError::Overflow)?,
         );
 
         events::validator_registered(&env, &wallet, &validator.credentials);
@@ -329,7 +333,12 @@ impl VerificationContract {
             .persistent()
             .set(&DataKey::ValidatorVector, &new_vector);
 
-        events::validator_revoked(&env, &admin, &wallet, &reason.unwrap_or(String::from_str(&env, "")));
+        events::validator_revoked(
+            &env,
+            &admin,
+            &wallet,
+            &reason.unwrap_or(String::from_str(&env, "")),
+        );
         Ok(())
     }
 
@@ -469,7 +478,9 @@ impl VerificationContract {
                 .unwrap_or(0u32);
             env.storage().instance().set(
                 &DataKey::ActiveValidatorCount,
-                &active_count.checked_add(1).ok_or(VerificationError::Overflow)?,
+                &active_count
+                    .checked_add(1)
+                    .ok_or(VerificationError::Overflow)?,
             );
 
             // Increment total validator count.
@@ -480,7 +491,9 @@ impl VerificationContract {
                 .unwrap_or(0u32);
             env.storage().instance().set(
                 &DataKey::TotalValidatorCount,
-                &total_count.checked_add(1).ok_or(VerificationError::Overflow)?,
+                &total_count
+                    .checked_add(1)
+                    .ok_or(VerificationError::Overflow)?,
             );
 
             events::validator_registered(&env, &wallet, &validator.credentials);
@@ -1113,6 +1126,24 @@ impl VerificationContract {
 
         env.storage().persistent().set(&dispute_key, &dispute);
 
+        let player_disputes_key = DataKey::PlayerDisputes(player_id);
+        let mut player_disputes: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&player_disputes_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if !player_disputes.contains(milestone_index) {
+            player_disputes.push_back(milestone_index);
+            env.storage()
+                .persistent()
+                .set(&player_disputes_key, &player_disputes);
+            env.storage().persistent().extend_ttl(
+                &player_disputes_key,
+                PERSISTENT_TTL_MIN,
+                PERSISTENT_TTL_MAX,
+            );
+        }
+
         let count: u32 = env
             .storage()
             .instance()
@@ -1194,6 +1225,115 @@ impl VerificationContract {
         env.storage()
             .persistent()
             .has(&DataKey::MilestoneDispute(player_id, milestone_index))
+    }
+
+    /// Returns the total number of disputes filed for a given `player_id`.
+    pub fn get_player_dispute_count(env: Env, player_id: u64) -> u32 {
+        let disputes_key = DataKey::PlayerDisputes(player_id);
+        if let Some(stored) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<u32>>(&disputes_key)
+        {
+            stored.len()
+        } else {
+            let count = Self::get_milestone_count(env.clone(), player_id);
+            let mut dispute_count = 0u32;
+            for i in 1..=count {
+                if env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::MilestoneDispute(player_id, i))
+                {
+                    dispute_count += 1;
+                }
+            }
+            dispute_count
+        }
+    }
+
+    /// Return a paginated list of disputes filed for a given `player_id`.
+    ///
+    /// `limit` is capped at 50 entries, consistent with pagination elsewhere.
+    pub fn get_player_disputes(
+        env: Env,
+        player_id: u64,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<MilestoneDispute> {
+        Self::list_player_disputes_helper(&env, player_id, None, offset, limit)
+    }
+
+    /// Return a paginated list of disputes for a player, filtered by resolution status.
+    ///
+    /// If `resolved` is true, only resolved disputes are returned.
+    /// If `resolved` is false, only open/unresolved disputes are returned.
+    /// `limit` is capped at 50 entries.
+    pub fn get_player_disputes_by_status(
+        env: Env,
+        player_id: u64,
+        resolved: bool,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<MilestoneDispute> {
+        Self::list_player_disputes_helper(&env, player_id, Some(resolved), offset, limit)
+    }
+
+    fn list_player_disputes_helper(
+        env: &Env,
+        player_id: u64,
+        status_filter: Option<bool>,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<MilestoneDispute> {
+        let cap = limit.min(50);
+        let mut results = Vec::new(env);
+        if cap == 0 {
+            return results;
+        }
+
+        let disputes_key = DataKey::PlayerDisputes(player_id);
+        let indices: Vec<u32> = if let Some(stored) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<u32>>(&disputes_key)
+        {
+            stored
+        } else {
+            let count = Self::get_milestone_count(env.clone(), player_id);
+            let mut list = Vec::new(env);
+            for i in 1..=count {
+                if env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::MilestoneDispute(player_id, i))
+                {
+                    list.push_back(i);
+                }
+            }
+            list
+        };
+
+        let mut skipped = 0u32;
+        for i in 0..indices.len() {
+            let m_idx = indices.get(i).unwrap();
+            if let Ok(dispute) = Self::get_dispute(env.clone(), player_id, m_idx) {
+                if let Some(req_resolved) = status_filter {
+                    if dispute.resolved != req_resolved {
+                        continue;
+                    }
+                }
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
+                results.push_back(dispute);
+                if results.len() >= cap {
+                    break;
+                }
+            }
+        }
+        results
     }
 
     // -------------------------------------------------------------------------
@@ -2650,7 +2790,11 @@ mod tests {
                 &env,
                 (
                     client.address.clone(),
-                    (Symbol::new(&env, "milestone_disputed"), player_wallet.clone()).into_val(&env),
+                    (
+                        Symbol::new(&env, "milestone_disputed"),
+                        player_wallet.clone()
+                    )
+                        .into_val(&env),
                     (2u64, 1u32, reason.clone()).into_val(&env)
                 )
             ]
@@ -2914,5 +3058,170 @@ mod tests {
         let validators = client.get_validators();
         assert_eq!(validators.len(), 1);
         assert_eq!(validators.get(0).unwrap(), wallet);
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue #646: Dispute enumeration and filtering tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_get_player_disputes_zero_disputes() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let player_id: u64 = 42;
+        assert_eq!(client.get_player_dispute_count(&player_id), 0);
+        let disputes = client.get_player_disputes(&player_id, &0, &10);
+        assert_eq!(disputes.len(), 0);
+
+        let unresolved = client.get_player_disputes_by_status(&player_id, &false, &0, &10);
+        assert_eq!(unresolved.len(), 0);
+    }
+
+    #[test]
+    fn test_get_player_disputes_one_dispute() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let validator = Address::generate(&env);
+        client.register_validator(&validator, &String::from_str(&env, "UEFA-B-License"));
+
+        let player_wallet = Address::generate(&env);
+        let player_id: u64 = 1;
+
+        client.approve_milestone(
+            &validator,
+            &player_id,
+            &String::from_str(&env, "Completed speed test"),
+            &String::from_str(&env, VALID_CID_V0),
+        );
+
+        let reason = String::from_str(&env, "Incorrect speed measurement");
+        client.dispute_milestone(&player_wallet, &player_id, &1u32, &reason);
+
+        assert_eq!(client.get_player_dispute_count(&player_id), 1);
+
+        let disputes = client.get_player_disputes(&player_id, &0, &10);
+        assert_eq!(disputes.len(), 1);
+        let d = disputes.get(0).unwrap();
+        assert_eq!(d.player_id, player_id);
+        assert_eq!(d.milestone_index, 1u32);
+        assert_eq!(d.reason, reason);
+        assert!(!d.resolved);
+    }
+
+    #[test]
+    fn test_get_player_disputes_multiple_disputes_and_pagination() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let validator = Address::generate(&env);
+        client.register_validator(&validator, &String::from_str(&env, "UEFA-B-License"));
+
+        let player_wallet = Address::generate(&env);
+        let player_id: u64 = 10;
+
+        client.approve_milestone(
+            &validator,
+            &player_id,
+            &String::from_str(&env, "Milestone 1"),
+            &String::from_str(&env, VALID_CID_V0),
+        );
+        client.approve_milestone(
+            &validator,
+            &player_id,
+            &String::from_str(&env, "Milestone 2"),
+            &String::from_str(&env, VALID_CID_V1),
+        );
+        client.approve_milestone(
+            &validator,
+            &player_id,
+            &String::from_str(&env, "Milestone 3"),
+            &String::from_str(&env, VALID_CID_V0_2),
+        );
+
+        client.dispute_milestone(
+            &player_wallet,
+            &player_id,
+            &1u32,
+            &String::from_str(&env, "Dispute M1"),
+        );
+        client.dispute_milestone(
+            &player_wallet,
+            &player_id,
+            &3u32,
+            &String::from_str(&env, "Dispute M3"),
+        );
+
+        assert_eq!(client.get_player_dispute_count(&player_id), 2);
+
+        let all_disputes = client.get_player_disputes(&player_id, &0, &10);
+        assert_eq!(all_disputes.len(), 2);
+        assert_eq!(all_disputes.get(0).unwrap().milestone_index, 1u32);
+        assert_eq!(all_disputes.get(1).unwrap().milestone_index, 3u32);
+
+        // Test pagination (limit 1)
+        let page1 = client.get_player_disputes(&player_id, &0, &1);
+        assert_eq!(page1.len(), 1);
+        assert_eq!(page1.get(0).unwrap().milestone_index, 1u32);
+
+        let page2 = client.get_player_disputes(&player_id, &1, &1);
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2.get(0).unwrap().milestone_index, 3u32);
+    }
+
+    #[test]
+    fn test_get_player_disputes_status_filtering() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let validator = Address::generate(&env);
+        client.register_validator(&validator, &String::from_str(&env, "UEFA-B-License"));
+
+        let player_wallet = Address::generate(&env);
+        let player_id: u64 = 5;
+
+        client.approve_milestone(
+            &validator,
+            &player_id,
+            &String::from_str(&env, "M1"),
+            &String::from_str(&env, VALID_CID_V0),
+        );
+        client.approve_milestone(
+            &validator,
+            &player_id,
+            &String::from_str(&env, "M2"),
+            &String::from_str(&env, VALID_CID_V1),
+        );
+
+        client.dispute_milestone(
+            &player_wallet,
+            &player_id,
+            &1u32,
+            &String::from_str(&env, "Reason 1"),
+        );
+        client.dispute_milestone(
+            &player_wallet,
+            &player_id,
+            &2u32,
+            &String::from_str(&env, "Reason 2"),
+        );
+
+        // Resolve milestone 1 dispute
+        client.resolve_dispute(&player_id, &1u32, &true);
+
+        // Filter unresolved (open) disputes
+        let open_disputes = client.get_player_disputes_by_status(&player_id, &false, &0, &10);
+        assert_eq!(open_disputes.len(), 1);
+        assert_eq!(open_disputes.get(0).unwrap().milestone_index, 2u32);
+
+        // Filter resolved disputes
+        let resolved_disputes = client.get_player_disputes_by_status(&player_id, &true, &0, &10);
+        assert_eq!(resolved_disputes.len(), 1);
+        assert_eq!(resolved_disputes.get(0).unwrap().milestone_index, 1u32);
     }
 }

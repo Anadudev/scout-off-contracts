@@ -1104,6 +1104,57 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
 
 ---
 
+#### `get_player_dispute_count(player_id: u64) -> u32`
+
+Return the total number of disputes filed for a given `player_id`.
+
+| | |
+|---|---|
+| **Auth** | None |
+| **Errors** | None |
+
+```bash
+stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
+  -- get_player_dispute_count --player_id 1
+```
+
+---
+
+#### `get_player_disputes(player_id: u64, offset: u32, limit: u32) -> Vec<MilestoneDispute>`
+
+Return a paginated list of all milestone disputes filed for `player_id`.
+`offset` is zero-based and `limit` is capped at 50 entries.
+
+| | |
+|---|---|
+| **Auth** | None |
+| **Errors** | None |
+
+```bash
+stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
+  -- get_player_disputes --player_id 1 --offset 0 --limit 50
+```
+
+---
+
+#### `get_player_disputes_by_status(player_id: u64, resolved: bool, offset: u32, limit: u32) -> Vec<MilestoneDispute>`
+
+Return a paginated list of milestone disputes for `player_id` filtered by resolution status.
+If `resolved` is `true`, only resolved disputes are returned. If `resolved` is `false`, only open/unresolved disputes are returned.
+`limit` is capped at 50 entries.
+
+| | |
+|---|---|
+| **Auth** | None |
+| **Errors** | None |
+
+```bash
+stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
+  -- get_player_disputes_by_status --player_id 1 --resolved false --offset 0 --limit 50
+```
+
+---
+
 #### `version() -> String`
 
 Return the deployed contract version string (from `Cargo.toml` at build time).

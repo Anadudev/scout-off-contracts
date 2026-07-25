@@ -100,4 +100,5 @@ pub enum DataKey {
     EvidenceUsed(String),
     ValidatorMilestones(Address),
     ActiveDisputesCount,
+    PlayerDisputes(u64),
 }
