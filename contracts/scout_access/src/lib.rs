@@ -1447,6 +1447,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: 30 * 24 * 60 * 60,
             pro_contact_limit: 10,
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         }
     }
 
@@ -2010,6 +2012,65 @@ mod tests {
         let offer = client.get_trial_offer(&1u64, &1u32);
         assert_eq!(offer.player_id, 1);
         assert_eq!(offer.scout, scout);
+    }
+
+    // #795: expire_trial_offers must sweep only escrows past their
+    // expires_at, refunding the scout and removing the record, while
+    // leaving still-live escrows untouched.
+    #[test]
+    fn test_expire_trial_offers_sweeps_only_expired_escrows() {
+        let (env, admin, xlm, _contract_id, client) = setup();
+        let scout = Address::generate(&env);
+        mint_token(&env, &xlm, &admin, &scout, 100_000_000);
+        client.subscribe(&scout, &SubscriptionTier::Elite);
+
+        // Two trial offers logged now — both will be past expires_at
+        // (default_fees: trial_offer_expiry_secs = 3_600) after the jump below.
+        client.pay_to_contact(&scout, &1u64);
+        client.log_trial_offer(
+            &scout,
+            &1u64,
+            &String::from_str(&env, "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB"),
+        );
+        client.pay_to_contact(&scout, &2u64);
+        client.log_trial_offer(
+            &scout,
+            &2u64,
+            &String::from_str(&env, "QmPK2s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB"),
+        );
+
+        // A third offer, logged 30 minutes later, will still be well within
+        // its 1h expiry window when the sweep runs.
+        env.ledger().with_mut(|l| l.timestamp += 1_800);
+        client.pay_to_contact(&scout, &3u64);
+        client.log_trial_offer(
+            &scout,
+            &3u64,
+            &String::from_str(&env, "QmPK3s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB"),
+        );
+
+        // Advance past the 1h window for offers 1 & 2 (3_700s old) but not
+        // for offer 3 (only 1_900s old).
+        env.ledger().with_mut(|l| l.timestamp += 1_900);
+
+        let escrow_amount = default_fees().trial_offer_escrow_stroops;
+        let token = TokenClient::new(&env, &xlm);
+        let balance_before = token.balance(&scout);
+
+        let swept = client.expire_trial_offers(&10u32);
+        assert_eq!(swept, 2, "only the two expired escrows should be swept");
+        assert_eq!(token.balance(&scout), balance_before + escrow_amount * 2);
+
+        // Swept escrows are gone: confirming them now hits the "already
+        // gone" path, since the TrialEscrow record no longer exists.
+        let player_wallet = Address::generate(&env);
+        let res1 = client.try_confirm_trial_offer(&player_wallet, &1u64, &1u32);
+        assert_eq!(res1, Err(Ok(ScoutAccessError::TrialOfferAlreadyConfirmed)));
+        let res2 = client.try_confirm_trial_offer(&player_wallet, &2u64, &1u32);
+        assert_eq!(res2, Err(Ok(ScoutAccessError::TrialOfferAlreadyConfirmed)));
+
+        // A second sweep finds nothing new to expire — offer 3 is not due yet.
+        assert_eq!(client.expire_trial_offers(&10u32), 0);
     }
 
     #[test]
