@@ -771,6 +771,18 @@ impl ScoutAccessContract {
         let expires_at = now
             .checked_add(fee_cfg.trial_offer_expiry_secs)
             .ok_or(ScoutAccessError::Overflow)?;
+
+        // #795: actually collect the escrow — without this transfer the
+        // TrialEscrow record was a bookkeeping-only promise, and every
+        // refund path (confirm_trial_offer's late-expiry branch and
+        // expire_trial_offers) paid out funds the contract never held.
+        let token_addr = Self::get_token(&env)?;
+        token::Client::new(&env, &token_addr).transfer(
+            &scout,
+            &env.current_contract_address(),
+            &escrow_amount,
+        );
+
         let escrow = TrialEscrow {
             amount: escrow_amount,
             expires_at,
