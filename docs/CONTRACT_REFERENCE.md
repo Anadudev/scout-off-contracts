@@ -3,6 +3,9 @@
 Complete public API reference for all four ScoutChain Soroban smart contracts.
 Every `pub fn` in every `#[contractimpl]` block is documented here.
 
+> [!NOTE]
+> **Last verified:** 2026-07-25 — synced against `cargo test` + `scripts/check-docs.sh` passing at commit `scout-off/scout-off-contracts@main` (PRs #917, #916, #915 documentation updates merged).
+
 ---
 
 All `stellar contract invoke` examples below pass `String` and enum arguments
@@ -1550,6 +1553,23 @@ greater than zero; either function returns `InvalidInput` otherwise.
 - There is no enforced upper bound on fee fields, but values larger than the XLM supply
   (≈ 500 000 000 XLM = 5 × 10¹⁵ stroops) will cause `Overflow` errors at fee
   settlement time.
+
+> [!NOTE]
+> **ContactRecord vs ProContactPeriod — two-tracked quota**
+> `ContactRecord` is a **permanent unlock**: created once per `(player_id, scout)` pair
+> on successful `pay_to_contact` and never deleted. It gates duplicate-contact checks
+> (`AlreadyContacted`).
+>
+> `ProContactPeriod` (stored under `ProContactCount`) is a **rolling quota counter**:
+> it tracks how many *unique* players a **Pro-tier** scout has contacted in the *current
+> subscription period* (`period_start == subscription.subscribed_at`). It resets to 0
+> automatically when the scout renews/upgrades their subscription. Elite scouts bypass
+> this counter entirely.
+>
+> **Interaction during `pay_to_contact`**: the contract first checks for an existing
+> `ContactRecord` (permanent duplicate guard). If none exists and the scout is Pro
+> tier, it then checks `ProContactPeriod.count < pro_contact_limit`. On success both
+> are written — the permanent `ContactRecord` and the incremented `ProContactPeriod`.
 
 See the [Glossary](GLOSSARY.md#feeconfig) for a plain-language description of each field.
 
