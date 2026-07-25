@@ -31,6 +31,8 @@ fn default_fees() -> FeeConfig {
         elite_sub_stroops: 7_000_000,
         sub_duration_secs: 30 * 24 * 60 * 60,
         pro_contact_limit: 10,
+        trial_offer_escrow_stroops: 500_000,
+        trial_offer_expiry_secs: 3_600,
     }
 }
 

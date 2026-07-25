@@ -863,11 +863,8 @@ impl ScoutAccessContract {
             }
         };
         let progress_client = progress_contract::Client::new(&env, &progress_addr);
-        match progress_client.try_advance_level(
-            &env.current_contract_address(),
-            &player_id,
-            &index,
-        ) {
+        match progress_client.try_advance_level(&env.current_contract_address(), &player_id, &index)
+        {
             Ok(_) => {}
             Err(e) => {
                 // Extract numeric error code from the contract error, if any.
@@ -954,11 +951,7 @@ impl ScoutAccessContract {
                 }
             };
 
-            token::Client::new(&env, &token_addr).transfer(
-                &contract_addr,
-                &scout,
-                &escrow.amount,
-            );
+            token::Client::new(&env, &token_addr).transfer(&contract_addr, &scout, &escrow.amount);
             env.storage().persistent().remove(&escrow_key);
             events::trial_offer_expired(&env, player_id, &scout, index);
             swept = swept.checked_add(1).ok_or(ScoutAccessError::Overflow)?;
@@ -971,11 +964,9 @@ impl ScoutAccessContract {
         }
 
         env.storage().persistent().set(&index_key, &kept);
-        env.storage().persistent().extend_ttl(
-            &index_key,
-            TRIAL_TTL_THRESHOLD,
-            TRIAL_TTL_EXTEND_TO,
-        );
+        env.storage()
+            .persistent()
+            .extend_ttl(&index_key, TRIAL_TTL_THRESHOLD, TRIAL_TTL_EXTEND_TO);
 
         Ok(swept)
     }
@@ -1571,6 +1562,8 @@ mod tests {
             elite_sub_stroops: 10_000_000,
             sub_duration_secs: 60 * 24 * 60 * 60,
             pro_contact_limit: 20,
+            trial_offer_escrow_stroops: 1_000_000,
+            trial_offer_expiry_secs: 7_200,
         };
 
         client.update_fee_config(&new_fees);
@@ -1585,11 +1578,7 @@ mod tests {
                 &env,
                 (
                     contract_id.clone(),
-                    (
-                        Symbol::new(&env, "fee_config_updated"),
-                        _admin.clone(),
-                    )
-                        .into_val(&env),
+                    (Symbol::new(&env, "fee_config_updated"), _admin.clone(),).into_val(&env),
                     (old_config, new_fees.clone()).into_val(&env)
                 )
             ]
@@ -1879,6 +1868,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: 30 * 24 * 60 * 60,
             pro_contact_limit: 3,
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         };
         client.initialize(&admin, &xlm, &fees);
 
@@ -1912,6 +1903,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: 30 * 24 * 60 * 60,
             pro_contact_limit: 2, // very low cap — Elite must ignore this
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         };
         client.initialize(&admin, &xlm, &fees);
 
@@ -1943,6 +1936,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: period_secs,
             pro_contact_limit: 2,
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         };
         client.initialize(&admin, &xlm, &fees);
 
@@ -1988,6 +1983,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: 30 * 24 * 60 * 60,
             pro_contact_limit: 0, // invalid — must be > 0
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         };
         let res = client.try_initialize(&admin, &xlm, &bad_fees);
         assert_eq!(res, Err(Ok(ScoutAccessError::InvalidInput)));
@@ -2623,6 +2620,8 @@ mod tests {
             elite_sub_stroops: 10_000_000,
             sub_duration_secs: 60 * 24 * 60 * 60,
             pro_contact_limit: 15,
+            trial_offer_escrow_stroops: 1_000_000,
+            trial_offer_expiry_secs: 7_200,
         };
         let result = client.try_update_fee_config(&new_fees);
         assert!(result.is_ok());
@@ -3545,9 +3544,15 @@ mod tests {
         mint_token(&env, &xlm, &admin, &scout_elite, 10_000_000);
 
         // All three must succeed — no prior subscription means no guard.
-        assert!(client.try_subscribe(&scout_basic, &SubscriptionTier::Basic).is_ok());
-        assert!(client.try_subscribe(&scout_pro, &SubscriptionTier::Pro).is_ok());
-        assert!(client.try_subscribe(&scout_elite, &SubscriptionTier::Elite).is_ok());
+        assert!(client
+            .try_subscribe(&scout_basic, &SubscriptionTier::Basic)
+            .is_ok());
+        assert!(client
+            .try_subscribe(&scout_pro, &SubscriptionTier::Pro)
+            .is_ok());
+        assert!(client
+            .try_subscribe(&scout_elite, &SubscriptionTier::Elite)
+            .is_ok());
     }
 
     /// A same-tier re-subscribe while the subscription is still active is not
