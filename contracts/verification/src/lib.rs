@@ -44,8 +44,16 @@ const MAX_VALIDATORS: u32 = 100;
 /// Maximum milestones a single validator may approve for one player.
 const MAX_MILESTONES_PER_PLAYER_PER_VALIDATOR: u32 = 5;
 
-// Admin key TTL — ~30 days at 5s/ledger.
-const ADMIN_BUMP_LEDGERS: u32 = 518400;
+// Core identity TTL: 30 days at ~5s/ledger ≈ 518_400 ledgers.
+// Milestone records, validator registrations, and evidence uniqueness data are
+// core identity records. A milestone approved by a validator is a permanent
+// part of a player's reputation and must not be silently archived.
+const PERSISTENT_TTL_MIN: u32 = 500;
+const PERSISTENT_TTL_MAX: u32 = 518_400;
+
+// Admin key TTL — synchronized with other contracts to ensure cross-contract
+// admin operations remain valid over time.
+const ADMIN_BUMP_LEDGERS: u32 = 518_400;
 
 /// Maximum length for milestone description in bytes.
 const MAX_DESCRIPTION_LEN: u32 = 256;
@@ -228,11 +236,21 @@ impl VerificationContract {
         env.storage()
             .persistent()
             .set(&DataKey::Validator(wallet.clone()), &validator);
+        // Keep-alive: extend TTL for validator records to preserve their identity
+        // and active/revoked status over time.
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Validator(wallet.clone()), PERSISTENT_TTL_MIN, PERSISTENT_TTL_MAX);
 
         validator_vector.push_back(wallet.clone());
         env.storage()
             .persistent()
             .set(&DataKey::ValidatorVector, &validator_vector);
+        // Keep-alive: extend TTL for the validator vector itself so the registry
+        // remains discoverable.
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::ValidatorVector, PERSISTENT_TTL_MIN, PERSISTENT_TTL_MAX);
 
         let active_count: u32 = env
             .storage()
@@ -459,6 +477,10 @@ impl VerificationContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::Validator(wallet.clone()), &validator);
+            // Keep-alive: extend TTL for validator records.
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::Validator(wallet.clone()), PERSISTENT_TTL_MIN, PERSISTENT_TTL_MAX);
             validator_vector.push_back(wallet.clone());
 
             // Increment active validator count.
@@ -490,6 +512,10 @@ impl VerificationContract {
         env.storage()
             .persistent()
             .set(&DataKey::ValidatorVector, &validator_vector);
+        // Keep-alive: extend TTL for the validator vector.
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::ValidatorVector, PERSISTENT_TTL_MIN, PERSISTENT_TTL_MAX);
         Ok(())
     }
     /// Re-activate a previously revoked validator (admin only).
@@ -732,10 +758,26 @@ impl VerificationContract {
         env.storage()
             .persistent()
             .set(&DataKey::Milestone(player_id, next_index), &milestone);
+        // Keep-alive: extend TTL for milestone record to prevent archival of
+        // permanently significant reputation events.
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Milestone(player_id, next_index), PERSISTENT_TTL_MIN, PERSISTENT_TTL_MAX);
+        
         env.storage().persistent().set(&counter_key, &next_index);
+        // Keep-alive: extend TTL for the milestone counter so future milestones
+        // can be correctly indexed.
+        env.storage()
+            .persistent()
+            .extend_ttl(&counter_key, PERSISTENT_TTL_MIN, PERSISTENT_TTL_MAX);
 
         // Mark the evidence hash as globally used
         env.storage().persistent().set(&evidence_used_key, &true);
+        // Keep-alive: extend TTL for evidence uniqueness so the same evidence
+        // cannot be reused after archival.
+        env.storage()
+            .persistent()
+            .extend_ttl(&evidence_used_key, PERSISTENT_TTL_MIN, PERSISTENT_TTL_MAX);
 
         // Increment per-validator milestone count
         let val_key = DataKey::ValidatorMilestoneCount(validator_wallet.clone());
@@ -966,10 +1008,16 @@ impl VerificationContract {
     }
 
     pub fn get_validator(env: Env, wallet: Address) -> Result<Validator, VerificationError> {
+        let validator = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Validator(wallet.clone()))
+            .ok_or(VerificationError::ValidatorNotFound)?;
+        // Keep-alive: extend TTL on read to preserve validator registration status over time.
         env.storage()
             .persistent()
-            .get(&DataKey::Validator(wallet))
-            .ok_or(VerificationError::ValidatorNotFound)
+            .extend_ttl(&DataKey::Validator(wallet), PERSISTENT_TTL_MIN, PERSISTENT_TTL_MAX);
+        Ok(validator)
     }
 
     /// Return every milestone approved by `wallet`.
@@ -2914,5 +2962,78 @@ mod tests {
         let validators = client.get_validators();
         assert_eq!(validators.len(), 1);
         assert_eq!(validators.get(0).unwrap(), wallet);
+    }
+
+    // #705: Core test proving validator and milestone archival prevention.
+    // Demonstrates that validator records and milestones cannot be silently archived
+    // after extended dormancy, and that get_validator/get_milestone properly extend TTL on read.
+    // This test will FAIL on unfixed code and PASS on fixed code.
+    #[test]
+    fn test_validator_and_milestone_survive_extended_dormancy_via_ttl_extension() {
+        use soroban_sdk::testutils::Ledger;
+
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Set a deterministic starting ledger sequence.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100;
+            l.max_entry_ttl = 600_000; // Allow extended TTL values in the test
+        });
+
+        // Register a validator and approve a milestone.
+        let validator_wallet = Address::generate(&env);
+        let credentials = String::from_str(&env, "UEFA B License");
+        client.register_validator(&validator_wallet, &credentials);
+
+        let player_id = 42u64;
+        let description = String::from_str(&env, "Performance evaluation");
+        let evidence_hash = String::from_str(&env, VALID_CID_V0);
+
+        let milestone_index = client.approve_milestone(
+            &validator_wallet,
+            &player_id,
+            &description,
+            &evidence_hash,
+        );
+
+        // Verify both validator and milestone are accessible.
+        assert!(client.is_active_validator(&validator_wallet));
+        let milestone_before = client.get_milestone(&player_id, &milestone_index);
+        assert_eq!(milestone_before.validator, validator_wallet);
+
+        // Advance the ledger far beyond the default Soroban persistent TTL (~4096 ledgers).
+        // Without the fix, both Validator and Milestone keys would expire here.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100 + 100_000; // well past archival threshold
+        });
+
+        // CRITICAL: With the fix in place, get_validator and get_milestone
+        // extend their TTLs on read, so both records remain accessible.
+        // Without the fix, these either panic (keys archived) or return error.
+        let validator_after = client.get_validator(&validator_wallet);
+        assert_eq!(
+            validator_after.wallet, validator_wallet,
+            "Validator record must not be archived after extended dormancy"
+        );
+        assert!(
+            validator_after.active,
+            "Validator active status must be preserved"
+        );
+
+        let milestone_after = client.get_milestone(&player_id, &milestone_index);
+        assert_eq!(
+            milestone_after.validator, validator_wallet,
+            "Milestone must not be archived after extended dormancy"
+        );
+        assert_eq!(
+            milestone_after.description, description,
+            "Milestone data must be preserved"
+        );
+
+        // Verify that subsequent reads also work (keep-alive is continuous).
+        let _ = client.get_validator(&validator_wallet);
+        let _ = client.get_milestone(&player_id, &milestone_index);
     }
 }

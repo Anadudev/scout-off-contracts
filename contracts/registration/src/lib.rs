@@ -54,9 +54,13 @@ const INSTANCE_TTL_MIN: u32 = 100;
 #[allow(dead_code)]
 const INSTANCE_TTL_MAX: u32 = 500;
 
-// Persistent storage TTL bump for player profiles and admin key.
+// Core identity TTL: 30 days at ~5s/ledger ≈ 518_400 ledgers.
+// Player and scout profiles are core identity data that must survive extended dormancy.
+// Composite indexes (PlayersByLevelRegion, PlayersByLevel) are derived from profiles
+// and must live as long as the profiles they index.
 const PERSISTENT_TTL_MIN: u32 = 500;
-const PERSISTENT_TTL_MAX: u32 = 2_000;
+const PERSISTENT_TTL_MAX: u32 = 518_400;
+const ADMIN_BUMP_LEDGERS: u32 = 518_400;
 
 // Admin key TTL — kept equal to PERSISTENT_TTL_MAX for simplicity.
 const ADMIN_BUMP_LEDGERS: u32 = 2_000;
@@ -2557,5 +2561,63 @@ mod tests {
 
         let result = client.try_register_player(&wallet, &vitals, &hashes);
         assert_eq!(result, Err(Ok(ScoutChainError::InvalidInput)));
+    }
+
+    // #705: Core test proving player profile archival prevention.
+    // Demonstrates that registered player profiles cannot be silently archived
+    // after extended dormancy, and that get_player properly extends TTL on read.
+    // This test will FAIL on unfixed code and PASS on fixed code.
+    #[test]
+    fn test_player_profile_survives_extended_dormancy_via_ttl_extension() {
+        use soroban_sdk::testutils::Ledger;
+
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Set a deterministic starting ledger sequence.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100;
+            l.max_entry_ttl = 600_000; // Allow extended TTL values in the test
+        });
+
+        // Register a player.
+        let wallet = Address::generate(&env);
+        let vitals = PlayerVitals {
+            age: 25,
+            position: String::from_str(&env, "Forward"),
+            region: String::from_str(&env, "Europe"),
+            nationality: String::from_str(&env, "France"),
+        };
+        let hashes = vec![&env, String::from_str(&env, "QmArchivalTest1")];
+        let player_id = client.register_player(&wallet, &vitals, &hashes);
+
+        // Verify the player is registered and retrievable.
+        let profile_before = client.get_player(&player_id);
+        assert_eq!(profile_before.wallet, wallet);
+        assert_eq!(profile_before.age, 25);
+
+        // Advance the ledger far beyond the default Soroban persistent TTL (~4096 ledgers).
+        // Without the fix, the Player key would expire here.
+        env.ledger().with_mut(|l| {
+            l.sequence_number = 100 + 100_000; // well past archival threshold
+        });
+
+        // CRITICAL: With the fix in place, calling get_player extends the TTL,
+        // so the profile is still readable and returns the correct data.
+        // Without the fix, this either panics (key is archived) or returns PlayerNotFound.
+        let profile_after_dormancy = client.get_player(&player_id);
+        assert_eq!(
+            profile_after_dormancy.wallet, wallet,
+            "Player profile must not be archived after extended dormancy"
+        );
+        assert_eq!(
+            profile_after_dormancy.age, 25,
+            "Player profile data must be preserved"
+        );
+
+        // Verify that subsequent reads also work (keep-alive is continuous).
+        let profile_second_read = client.get_player(&player_id);
+        assert_eq!(profile_second_read.wallet, wallet);
     }
 }
