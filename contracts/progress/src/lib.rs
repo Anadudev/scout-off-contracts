@@ -19,6 +19,8 @@ const ADMIN_BUMP_LEDGERS: u32 = 1000;
 
 const ADMIN_BUMP_LEDGERS: u32 = 2_000;
 
+const ADMIN_BUMP_LEDGERS: u32 = 2_000;
+
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Minimal client for the registration contract.
@@ -454,6 +456,93 @@ impl ProgressContract {
             }
         }
         entries
+    }
+
+    /// Stable cursor-based history pagination.
+    ///
+    /// Guarantees that a consumer paging through results sees **every entry
+    /// exactly once** even if new entries are appended between page fetches —
+    /// solving the skip/duplicate problem that plain `offset` pagination has
+    /// under concurrent mutation (issue #800).
+    ///
+    /// ## How it works
+    ///
+    /// On the **first call** pass `cursor_snapshot` = `None` and
+    /// `cursor_next_index` = `None`. The function snapshots the current
+    /// entry count and returns entries `1..=min(limit, snapshot_count)`.
+    /// It also returns the `snapshot_count` and the `next_index` for the
+    /// following page.
+    ///
+    /// On **subsequent calls** pass back the `snapshot_count` and
+    /// `next_index` values from the previous response. The function uses
+    /// `snapshot_count` as the immutable upper bound — any entries appended
+    /// after the first call are invisible to this cursor, so no entry is
+    /// skipped or duplicated.
+    ///
+    /// The cursor is fully self-describing (two u32 values) and requires no
+    /// server-side session state.
+    ///
+    /// ## Parameters
+    ///
+    /// - `player_id`         — the player whose history to page through.
+    /// - `cursor_snapshot`   — `None` for the first page; `Some(snapshot_count)`
+    ///                         from the previous response for subsequent pages.
+    /// - `cursor_next_index` — `None` for the first page; `Some(next_index)`
+    ///                         from the previous response for subsequent pages.
+    /// - `limit`             — max entries per page (capped at 50).
+    ///
+    /// ## Returns `(entries, next_index, snapshot_count)`
+    ///
+    /// - `entries`        — the page of [`ProgressEntry`] records.
+    /// - `next_index`     — pass as `cursor_next_index` in the next call.
+    ///                      `0` signals that all entries have been consumed.
+    /// - `snapshot_count` — pass as `cursor_snapshot` in the next call
+    ///                      (unchanged across all pages of the same cursor).
+    pub fn get_history_page_with_cursor(
+        env: Env,
+        player_id: u64,
+        cursor_snapshot: Option<u32>,
+        cursor_next_index: Option<u32>,
+        limit: u32,
+    ) -> (Vec<ProgressEntry>, u32, u32) {
+        const MAX_PAGE: u32 = 50;
+
+        // On the first call snapshot the current count so it never changes
+        // for this logical cursor, even if advance_level is called concurrently.
+        let snapshot_count: u32 = match cursor_snapshot {
+            Some(s) => s,
+            None => env
+                .storage()
+                .persistent()
+                .get(&DataKey::HistoryCounter(player_id))
+                .unwrap_or(0u32),
+        };
+
+        let next_index: u32 = cursor_next_index.unwrap_or(1);
+
+        // All pages consumed (or empty history).
+        if snapshot_count == 0 || next_index == 0 || next_index > snapshot_count {
+            return (Vec::new(&env), 0u32, snapshot_count);
+        }
+
+        let effective_limit = limit.min(MAX_PAGE).max(1);
+        let end = (next_index + effective_limit - 1).min(snapshot_count);
+
+        let mut entries: Vec<ProgressEntry> = Vec::new(&env);
+        for i in next_index..=end {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::HistoryEntry(player_id, i))
+            {
+                entries.push_back(entry);
+            }
+        }
+
+        // next_index for the following page; 0 signals exhaustion.
+        let returned_next = if end >= snapshot_count { 0u32 } else { end + 1 };
+
+        (entries, returned_next, snapshot_count)
     }
 
     /// Query history entries for a player since a given Unix timestamp.
