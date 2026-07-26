@@ -2,11 +2,11 @@
 mod events;
 mod types;
 
-use errors::ScoutAccessError;
+pub use errors::ScoutAccessError;
 use types::{DataKey, Subscription, TrialOffer};
 pub use types::{FeeConfig, SubscriptionTier};
 
-use soroban_sdk::{contract, contractimpl, token, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
 
 use scoutchain_shared_types::{validate_cid, ContractHealth};
 
@@ -134,7 +134,7 @@ impl ScoutAccessContract {
         Self::require_admin(&env)?;
         let admin: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Admin)
             .ok_or(ScoutAccessError::NotInitialized)?;
         env.storage().instance().set(&DataKey::Paused, &true);
@@ -147,7 +147,7 @@ impl ScoutAccessContract {
         Self::require_admin(&env)?;
         let admin: Address = env
             .storage()
-            .instance()
+            .persistent()
             .get(&DataKey::Admin)
             .ok_or(ScoutAccessError::NotInitialized)?;
         env.storage().instance().set(&DataKey::Paused, &false);
@@ -778,22 +778,22 @@ impl ScoutAccessContract {
     // -------------------------------------------------------------------------
 
     fn require_admin(env: &Env) -> Result<(), ScoutAccessError> {
-    let admin: Address = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Admin)
-        .ok_or(ScoutAccessError::NotInitialized)?;
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .ok_or(ScoutAccessError::NotInitialized)?;
 
-    admin.require_auth();
+        admin.require_auth();
 
-    env.storage().persistent().extend_ttl(
-        &DataKey::Admin,
-        ADMIN_BUMP_LEDGERS,
-        ADMIN_BUMP_LEDGERS,
-    );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Admin,
+            ADMIN_BUMP_LEDGERS,
+            ADMIN_BUMP_LEDGERS,
+        );
 
-    Ok(())
-}
+        Ok(())
+    }
 
     fn require_initialized(env: &Env) -> Result<(), ScoutAccessError> {
         if !env
@@ -1707,14 +1707,6 @@ mod tests {
         let scout_balance_after = TokenClient::new(&env, &xlm).balance(&scout);
 
         assert_eq!(
-    contract_balance_before - refund_amount,
-    contract_balance_after
-);
-
-assert_eq!(
-    scout_balance_before + refund_amount,
-    scout_balance_after
-);
             contract_balance_before - refund_amount,
             contract_balance_after
         );
