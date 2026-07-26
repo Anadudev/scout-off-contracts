@@ -4,7 +4,7 @@ mod errors;
 mod events;
 mod types;
 
-use errors::ProgressError;
+pub use errors::ProgressError;
 use types::{ContractHealth, DataKey, ProgressEntry, ProgressLevel};
 
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
@@ -15,7 +15,30 @@ const INSTANCE_TTL_MAX: u32 = 500;
 const PERSISTENT_TTL_MIN: u32 = 500;
 const PERSISTENT_TTL_MAX: u32 = 2000;
 
+const ADMIN_BUMP_LEDGERS: u32 = 2_000;
+
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// Minimal client for the registration contract.
+// Used to sync a player's level after advance_level / reset_player_level.
+mod registration_contract {
+    use scoutchain_shared_types::ProgressLevel;
+    use soroban_sdk::{contractclient, contracterror, Env};
+
+    #[contracterror]
+    #[derive(Copy, Clone, Debug, PartialEq)]
+    #[repr(u32)]
+    pub enum Error {
+        PlayerNotFound = 3,
+        Unauthorized = 10,
+    }
+
+    #[contractclient(name = "Client")]
+    #[allow(dead_code)]
+    pub trait RegistrationContractClient {
+        fn set_player_level(env: Env, player_id: u64, level: ProgressLevel) -> Result<(), Error>;
+    }
+}
 
 // #457: Minimal client for the verification contract.
 // Used to confirm that a milestone_ref actually exists on-chain for a given
@@ -190,11 +213,10 @@ impl ProgressContract {
         // ScoutAccessContract for trial-offer Level-3 advances) may call this
         // function.  If neither whitelist address is configured the call is
         // rejected — there is no open fallback.
-        let verification_contract: Address = env
+        let verification_contract: Option<Address> = env
             .storage()
             .instance()
-            .get::<DataKey, Address>(&DataKey::VerificationContract)
-            .ok_or(ProgressError::NotInitialized)?;
+            .get::<DataKey, Address>(&DataKey::VerificationContract);
 
         // Check whether an optional secondary caller (e.g. scout_access) is
         // also whitelisted, then require auth from whichever address matches.
@@ -210,8 +232,10 @@ impl ProgressContract {
 
         if caller_is_secondary {
             secondary.unwrap().require_auth();
+        } else if let Some(ref vc) = verification_contract {
+            vc.require_auth();
         } else {
-            verification_contract.require_auth();
+            return Err(ProgressError::NotInitialized);
         }
 
         // #457: When the VerificationContract is configured, validate that
