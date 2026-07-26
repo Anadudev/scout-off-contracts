@@ -2558,4 +2558,83 @@ mod tests {
         let result = client.try_register_player(&wallet, &vitals, &hashes);
         assert_eq!(result, Err(Ok(ScoutChainError::InvalidInput)));
     }
+
+    // -------------------------------------------------------------------------
+    // Issue #649: Vitals field length limits audit & post-registration immutability
+    // -------------------------------------------------------------------------
+
+    /// Audit and regression test locking in vitals field length validation in
+    /// `register_player` (position <= 64, region <= 100, nationality <= 64 bytes)
+    /// and confirming vitals fields are write-once and immutable post-registration.
+    #[test]
+    fn test_vitals_length_limits_and_immutability_audit() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // 1. Confirm register_player rejects oversized position (> 64 bytes)
+        let wallet1 = Address::generate(&env);
+        let vitals_bad_pos = PlayerVitals {
+            age: 20,
+            position: String::from_str(&env, &"P".repeat(65)),
+            region: String::from_str(&env, "West Africa"),
+            nationality: String::from_str(&env, "Ghana"),
+        };
+        let hashes = vec![&env, String::from_str(&env, "QmTest")];
+        assert_eq!(
+            client.try_register_player(&wallet1, &vitals_bad_pos, &hashes),
+            Err(Ok(ScoutChainError::InvalidInput))
+        );
+
+        // 2. Confirm register_player rejects oversized region (> 100 bytes)
+        let wallet2 = Address::generate(&env);
+        let vitals_bad_reg = PlayerVitals {
+            age: 20,
+            position: String::from_str(&env, "Forward"),
+            region: String::from_str(&env, &"R".repeat(101)),
+            nationality: String::from_str(&env, "Ghana"),
+        };
+        assert_eq!(
+            client.try_register_player(&wallet2, &vitals_bad_reg, &hashes),
+            Err(Ok(ScoutChainError::InvalidInput))
+        );
+
+        // 3. Confirm register_player rejects oversized nationality (> 64 bytes)
+        let wallet3 = Address::generate(&env);
+        let vitals_bad_nat = PlayerVitals {
+            age: 20,
+            position: String::from_str(&env, "Forward"),
+            region: String::from_str(&env, "West Africa"),
+            nationality: String::from_str(&env, &"N".repeat(65)),
+        };
+        assert_eq!(
+            client.try_register_player(&wallet3, &vitals_bad_nat, &hashes),
+            Err(Ok(ScoutChainError::InvalidInput))
+        );
+
+        // 4. Confirm register_player succeeds with exact upper boundary lengths
+        let wallet_valid = Address::generate(&env);
+        let vitals_max = PlayerVitals {
+            age: 25,
+            position: String::from_str(&env, &"P".repeat(64)),
+            region: String::from_str(&env, &"R".repeat(100)),
+            nationality: String::from_str(&env, &"N".repeat(64)),
+        };
+        let player_id = client.register_player(&wallet_valid, &vitals_max, &hashes);
+        let profile_init = client.get_player(&player_id);
+        assert_eq!(profile_init.vitals.position, vitals_max.position);
+        assert_eq!(profile_init.vitals.region, vitals_max.region);
+        assert_eq!(profile_init.vitals.nationality, vitals_max.nationality);
+
+        // 5. Update profile only accepts new ipfs_hashes — confirm vitals remain unchanged
+        let new_hashes = vec![&env, String::from_str(&env, "QmUpdatedHash")];
+        client.update_profile(&player_id, &new_hashes);
+
+        let profile_updated = client.get_player(&player_id);
+        assert_eq!(profile_updated.ipfs_hashes, new_hashes);
+        assert_eq!(profile_updated.vitals.position, vitals_max.position);
+        assert_eq!(profile_updated.vitals.region, vitals_max.region);
+        assert_eq!(profile_updated.vitals.nationality, vitals_max.nationality);
+        assert_eq!(profile_updated.vitals.age, vitals_max.age);
+    }
 }
