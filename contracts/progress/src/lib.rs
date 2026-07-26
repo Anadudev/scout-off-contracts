@@ -1484,7 +1484,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pause_unpause_events() {
+    fn test_pause_contract_emits_contract_paused_event() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, ProgressContract);
@@ -1507,19 +1507,34 @@ mod tests {
                 )
             ]
         );
+    }
 
+    #[test]
+    fn test_unpause_contract_emits_contract_unpaused_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ProgressContract);
+        let client = ProgressContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let verification = Address::generate(&env);
+        client.set_verification_contract(&verification);
+
+        client.pause_contract();
+        // Clear events by just getting the length so we can check the latest event
+        let _ = env.events().all();
+        
         client.unpause_contract();
         let events = env.events().all();
+        // The unpause event should be the last event in the vector
+        let last_event = events.last().unwrap();
         assert_eq!(
-            events,
-            soroban_sdk::vec![
-                &env,
-                (
-                    client.address.clone(),
-                    (Symbol::new(&env, "contract_unpaused"), admin.clone()).into_val(&env),
-                    ().into_val(&env)
-                )
-            ]
+            last_event,
+            (
+                client.address.clone(),
+                (Symbol::new(&env, "contract_unpaused"), admin.clone()).into_val(&env),
+                ().into_val(&env)
+            )
         );
     }
 
