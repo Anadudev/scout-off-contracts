@@ -357,11 +357,9 @@ legitimately can to the new ones. **It is not a full automatic migration**, beca
 of an authorization asymmetry between the two data categories:
 
 - **Validators — replayed automatically.** `verification.register_validator(wallet, credentials)` is **admin-only** (`require_admin`, no wallet self-auth). The operator holds the admin key, so the script reads every active validator via `get_validators()` + `get_validator()` on the old contract and re-registers each one on the new contract, signed by `DEPLOYER_SECRET`. No user action required.
-- **Players and scouts — CANNOT be replayed automatically.** `registration.register_player(wallet, vitals, ipfs_hashes)` and `registration.register_scout(wallet, region)` both call `wallet.require_auth()` — they require the **player's / scout's own signature**, not the admin's. An operator does not hold those private keys and therefore cannot submit a valid registration transaction on their behalf. The script still **exports** all player and scout data (via `get_player_count()`/`get_player(id)` and `get_scout_count()`/`get_scout(id)`) to timestamped JSON files under `migration-export/` so nothing is lost, but the re-seeding on the new contract must happen by one of:
-  - **(a)** each player / scout re-registering themselves against the new contract ID (self-service), or
-  - **(b)** the team adding a dedicated **admin-only seeding entrypoint** to the registration contract (e.g. an `admin_seed_player`). This is a **documented follow-up**, out of scope for the current tooling.
+- **Players and scouts — replayed via admin-only seeding entrypoints.** The replay script now exports the player and scout payloads (via `get_player_count()`/`get_player(id)` and `get_scout_count()`/`get_scout(id)`) to timestamped JSON files under `migration-export/` and then calls `registration.admin_seed_player(...)` / `registration.admin_seed_scout(...)` on the new contract, signed by `DEPLOYER_SECRET`. This avoids the wallet-auth requirement of `register_player` / `register_scout` while preserving the full profile state.
 
-  > Note on levels: the registration contract does **not** store a player's level — the progress contract is the source of truth (`resolve_level` / `set_player_level`). The exported `PlayerProfile` already carries the `level` field resolved from the old progress contract, so it is captured in the export for whichever re-seeding path is chosen.
+  > Note on levels: the registration contract does **not** store a player's level — the progress contract is the source of truth (`resolve_level` / `set_player_level`). The exported `PlayerProfile` already carries the `level` field resolved from the old progress contract, so it is captured in the export and re-seeded through `admin_seed_player`.
 
 #### Testing a migration against the local sandbox
 
@@ -499,3 +497,49 @@ no snapshot — you must re-deploy from scratch:
 > **Explicitly:** there is no need to call `pause_contract` on the orphaned contracts, no need
 > to manually abandon them, and no risk of them interfering with the fresh deployment. They are
 > simply unused contract instances that will never be wired or called.
+
+
+---
+
+## TTL Policy (Issue #705)
+
+### Overview
+
+All four contracts have been redesigned to prevent silent data loss due to persistent storage archival. Player levels, validator registrations, scout subscriptions, and milestone records now use a 30-day TTL (518,400 ledgers) instead of ~3 hours (2,000 ledgers).
+
+### What Changed
+
+- **Progress contract:** PlayerLevel now extends TTL on every `get_level()` read.
+- **Registration contract:** Player and Scout profiles extend TTL on every read.
+- **Verification contract:** Milestone and Validator records extend TTL on every read; `approve_milestone` extends all related keys (Milestone, MilestoneCounter, EvidenceUsed) on write.
+- **Scout Access contract:** Subscription and ContactRecord keys now use 30-day TTL.
+
+### Deployment Impact
+
+1. **No breaking changes to public APIs:** All function signatures remain the same.
+2. **No changes to event shapes:** All event topics and data remain compatible with existing indexers.
+3. **Increased TTL extension calls:** Every read of a core identity key now calls `extend_ttl`. This is visible in transaction logs but is expected and safe.
+
+### Validation
+
+After deployment, verify the fix:
+
+```bash
+# In any contract's test environment:
+1. Register a player and advance them to Elite tier.
+2. Advance the test ledger far past the old TTL threshold (~5000 ledgers).
+3. Call get_level(player_id) — must return Elite, not Unverified.
+```
+
+For complete validation, see the integration tests in:
+- `contracts/progress/src/lib.rs`: `test_player_level_survives_extended_dormancy_via_ttl_extension()`
+- `contracts/registration/src/lib.rs`: `test_player_profile_survives_extended_dormancy_via_ttl_extension()`
+- `contracts/verification/src/lib.rs`: `test_validator_and_milestone_survive_extended_dormancy_via_ttl_extension()`
+
+### Documentation
+
+See [`docs/TTL_POLICY.md`](TTL_POLICY.md) for:
+- Detailed TTL values per contract and per DataKey
+- Rationale for 30-day choice
+- Cost analysis (CPU and storage)
+- Adding new persistent keys with proper TTL handling

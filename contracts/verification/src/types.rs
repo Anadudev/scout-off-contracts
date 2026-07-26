@@ -8,6 +8,14 @@ pub enum ValidatorStatus {
     NotRegistered,
     Active,
     Revoked,
+    RevokedForCause,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MilestoneWithValidatorStatus {
+    pub milestone: Milestone,
+    pub validator_status: ValidatorStatus,
 }
 
 /// A single verified milestone record
@@ -100,5 +108,5 @@ pub enum DataKey {
     EvidenceUsed(String),
     ValidatorMilestones(Address),
     ActiveDisputesCount,
-    PlayerDisputes(u64),
+    ValidatorRevokedForCause(Address),
 }

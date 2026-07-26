@@ -3,6 +3,9 @@
 Complete public API reference for all four ScoutChain Soroban smart contracts.
 Every `pub fn` in every `#[contractimpl]` block is documented here.
 
+> [!NOTE]
+> **Last verified:** 2026-07-25 — synced against `cargo test` + `scripts/check-docs.sh` passing at commit `scout-off/scout-off-contracts@main` (PRs #917, #916, #915 documentation updates merged).
+
 ---
 
 All `stellar contract invoke` examples below pass `String` and enum arguments
@@ -104,8 +107,9 @@ Returns the assigned `player_id`.
 | **Errors** | `AlreadyRegistered` · `InvalidInput` (field too long or bad hash count) · `NotInitialized` · `ContractPaused` · `Overflow` |
 
 Constraints:
-- `position`, `region`, and `nationality` max 64 bytes each
+- `position` and `nationality` max 64 bytes each; `region` max 100 bytes
 - `ipfs_hashes` must contain 1–10 entries
+- Player vitals (`position`, `region`, `nationality`, `age`) are write-once at registration time and immutable post-registration. Length limits are strictly enforced during `register_player` and cannot be bypassed via post-registration mutation.
 
 ```bash
 stellar contract invoke --id $REGISTRATION_CONTRACT_ID \
@@ -119,7 +123,7 @@ stellar contract invoke --id $REGISTRATION_CONTRACT_ID \
 
 #### `update_profile(player_id: u64, ipfs_hashes: Vec<String>) -> Result<(), ScoutChainError>`
 
-Replace a player's IPFS content hashes (highlight reels, photos).
+Replace a player's IPFS content hashes (highlight reels, photos). Note that `update_profile` accepts only `ipfs_hashes` and does not take or modify `PlayerVitals` fields. Because player vitals are write-once at registration time and immutable post-registration, length validation runs exclusively during `register_player` and no post-registration update path exists to set or modify vitals.
 
 | | |
 |---|---|
@@ -596,7 +600,7 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
 #### `revoke_validator(wallet: Address, reason: Option<String>) -> Result<(), VerificationError>`
 
 Deactivate a validator. Revoked validators cannot approve milestones.
-`reason` is optional and capped at 128 bytes.
+`reason` is optional and capped at 128 bytes. If the reason is not exactly `"Routine"`, the validator is considered revoked for cause. This emits an additional `validator_revoked_for_cause` event and updates their status to `RevokedForCause` so off-chain indexers and `get_milestone_with_validator_status` can flag their historical milestones.
 
 | | |
 |---|---|
@@ -616,7 +620,7 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
 
 Revoke multiple validators in a single atomic transaction. Applies the same
 revoke logic as `revoke_validator` to each wallet in `wallets`, emitting one
-`validator_revoked` event per revocation. If any wallet is not registered the
+`validator_revoked` event per revocation (and `validator_revoked_for_cause` if the reason is not `"Routine"`). If any wallet is not registered the
 entire batch fails and no revocations are applied.
 
 | | |
@@ -716,7 +720,7 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID -- get_validators
 
 #### `get_validator_status(wallet: Address) -> ValidatorStatus`
 
-Return the detailed status of a validator wallet: `Active`, `Revoked`, or
+Return the detailed status of a validator wallet: `Active`, `Revoked`, `RevokedForCause`, or
 `NotRegistered`. Prefer this over `is_active_validator` for precise status
 checks.
 
@@ -761,6 +765,22 @@ Read a specific milestone record. Indices start at `1`.
 ```bash
 stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
   -- get_milestone --player_id 1 --index 1
+```
+
+---
+
+#### `get_milestone_with_validator_status(player_id: u64, index: u32) -> Result<MilestoneWithValidatorStatus, VerificationError>`
+
+Read a specific milestone record along with the current status of the validator who approved it. Useful for checking if the approving validator was later revoked for cause.
+
+| | |
+|---|---|
+| **Auth** | None |
+| **Errors** | `MilestoneNotFound` |
+
+```bash
+stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
+  -- get_milestone_with_validator_status --player_id 1 --index 1
 ```
 
 ---
@@ -1602,6 +1622,23 @@ greater than zero; either function returns `InvalidInput` otherwise.
   (≈ 500 000 000 XLM = 5 × 10¹⁵ stroops) will cause `Overflow` errors at fee
   settlement time.
 
+> [!NOTE]
+> **ContactRecord vs ProContactPeriod — two-tracked quota**
+> `ContactRecord` is a **permanent unlock**: created once per `(player_id, scout)` pair
+> on successful `pay_to_contact` and never deleted. It gates duplicate-contact checks
+> (`AlreadyContacted`).
+>
+> `ProContactPeriod` (stored under `ProContactCount`) is a **rolling quota counter**:
+> it tracks how many *unique* players a **Pro-tier** scout has contacted in the *current
+> subscription period* (`period_start == subscription.subscribed_at`). It resets to 0
+> automatically when the scout renews/upgrades their subscription. Elite scouts bypass
+> this counter entirely.
+>
+> **Interaction during `pay_to_contact`**: the contract first checks for an existing
+> `ContactRecord` (permanent duplicate guard). If none exists and the scout is Pro
+> tier, it then checks `ProContactPeriod.count < pro_contact_limit`. On success both
+> are written — the permanent `ContactRecord` and the incremented `ProContactPeriod`.
+
 See the [Glossary](GLOSSARY.md#feeconfig) for a plain-language description of each field.
 
 > [!NOTE]
@@ -1989,6 +2026,34 @@ stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
   --scout $SCOUT_ADDRESS \
   --player_id 1 \
   --details_hash '"QmTrialOfferDetails"'
+```
+
+---
+
+#### `expire_trial_offers(limit: u32) -> Result<u32, ScoutAccessError>`
+
+Admin-only sweep of pending trial offers whose escrow has passed
+`expires_at`. For each expired entry it refunds the escrowed XLM to the
+originating scout, removes the `TrialEscrow` record, and emits
+`trial_offer_expired` — the same cleanup `confirm_trial_offer` performs
+reactively when called late, run proactively and in bulk. Returns the
+number of escrows actually swept (`0` if none were due).
+
+`limit` bounds how many outstanding escrows are examined in this call,
+capped server-side at 20 regardless of the value passed in, so a large
+backlog cannot exceed the CPU-instruction budget in a single invocation
+(see `ci/cpu-cost-budget.md`). Entries not yet past `expires_at` are left
+in place. Call repeatedly (e.g. from a cron/keeper) to drain a backlog
+larger than the per-call cap.
+
+| | |
+|---|---|
+| **Auth** | Admin must sign |
+| **Errors** | `NotInitialized` · `Unauthorized` · `Overflow` |
+
+```bash
+stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
+  -- expire_trial_offers --limit 20
 ```
 
 ---

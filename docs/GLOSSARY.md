@@ -177,8 +177,10 @@ an active Elite subscription may log trial offers.
 A trusted third party (local coach, academy director, or certified trainer)
 registered by the platform admin. Only active validators may call
 `approve_milestone`. A validator can be revoked by the admin; revoked validators
-cannot approve further milestones until re-activated.
+cannot approve further milestones until re-activated. If a validator is revoked
+for cause (e.g. misconduct), their past milestones are flagged so they can be
+weighed appropriately by scouts and indexers.
 
 - Relevant functions: `register_validator`, `revoke_validator`,
-  `get_validator_status`, `approve_milestone` — see
+  `get_validator_status`, `approve_milestone`, `get_milestone_with_validator_status` — see
   [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md#verification).
