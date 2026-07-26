@@ -329,7 +329,14 @@ impl VerificationContract {
             .persistent()
             .set(&DataKey::ValidatorVector, &new_vector);
 
-        events::validator_revoked(&env, &admin, &wallet, &reason.unwrap_or(String::from_str(&env, "")));
+        let reason_str = reason.unwrap_or(String::from_str(&env, ""));
+        events::validator_revoked(&env, &admin, &wallet, &reason_str);
+
+        let routine_str = String::from_str(&env, "Routine");
+        if reason_str != routine_str {
+            env.storage().persistent().set(&DataKey::ValidatorRevokedForCause(wallet.clone()), &true);
+            events::validator_revoked_for_cause(&env, &admin, &wallet, &reason_str);
+        }
         Ok(())
     }
 
@@ -382,6 +389,12 @@ impl VerificationContract {
                 .set(&DataKey::ValidatorVector, &new_vector);
 
             events::validator_revoked(&env, &admin, &wallet, &reason_str);
+            
+            let routine_str = String::from_str(&env, "Routine");
+            if reason_str != routine_str {
+                env.storage().persistent().set(&DataKey::ValidatorRevokedForCause(wallet.clone()), &true);
+                events::validator_revoked_for_cause(&env, &admin, &wallet, &reason_str);
+            }
         }
 
         Ok(())
@@ -525,6 +538,10 @@ impl VerificationContract {
                 &count.checked_add(1).ok_or(VerificationError::Overflow)?,
             );
         }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ValidatorRevokedForCause(wallet.clone()));
 
         events::validator_restored(&env, &admin, &wallet);
         Ok(())
@@ -887,6 +904,19 @@ impl VerificationContract {
         Ok(milestone)
     }
 
+    pub fn get_milestone_with_validator_status(
+        env: Env,
+        player_id: u64,
+        index: u32,
+    ) -> Result<types::MilestoneWithValidatorStatus, VerificationError> {
+        let milestone = Self::get_milestone(env.clone(), player_id, index)?;
+        let validator_status = Self::get_validator_status(env, milestone.validator.clone());
+        Ok(types::MilestoneWithValidatorStatus {
+            milestone,
+            validator_status,
+        })
+    }
+
     pub fn get_milestone_count(env: Env, player_id: u64) -> u32 {
         env.storage()
             .persistent()
@@ -1031,7 +1061,13 @@ impl VerificationContract {
         {
             None => ValidatorStatus::NotRegistered,
             Some(v) if v.active => ValidatorStatus::Active,
-            Some(_) => ValidatorStatus::Revoked,
+            Some(_) => {
+                if env.storage().persistent().has(&DataKey::ValidatorRevokedForCause(wallet)) {
+                    ValidatorStatus::RevokedForCause
+                } else {
+                    ValidatorStatus::Revoked
+                }
+            }
         }
     }
 
@@ -2914,5 +2950,44 @@ mod tests {
         let validators = client.get_validators();
         assert_eq!(validators.len(), 1);
         assert_eq!(validators.get(0).unwrap(), wallet);
+    }
+
+    #[test]
+    fn test_validator_reputation_mechanism() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let wallet_cause = Address::generate(&env);
+        let wallet_routine = Address::generate(&env);
+        client.register_validator(&wallet_cause, &String::from_str(&env, "Coach A"));
+        client.register_validator(&wallet_routine, &String::from_str(&env, "Coach B"));
+
+        // Approve milestones
+        client.approve_milestone(&wallet_cause, &1u64, &String::from_str(&env, "M1"), &String::from_str(&env, "QmCause"));
+        client.approve_milestone(&wallet_routine, &2u64, &String::from_str(&env, "M2"), &String::from_str(&env, "QmRoutine"));
+
+        // Revoke with cause
+        client.revoke_validator(&wallet_cause, &Some(String::from_str(&env, "Misconduct")));
+        
+        // Revoke for routine
+        client.revoke_validator(&wallet_routine, &Some(String::from_str(&env, "Routine")));
+
+        // Check validator status
+        assert_eq!(client.get_validator_status(&wallet_cause), types::ValidatorStatus::RevokedForCause);
+        assert_eq!(client.get_validator_status(&wallet_routine), types::ValidatorStatus::Revoked);
+
+        // Check milestone with status
+        let milestone_cause = client.get_milestone_with_validator_status(&1u64, &1u32);
+        assert_eq!(milestone_cause.validator_status, types::ValidatorStatus::RevokedForCause);
+
+        let milestone_routine = client.get_milestone_with_validator_status(&2u64, &1u32);
+        assert_eq!(milestone_routine.validator_status, types::ValidatorStatus::Revoked);
+        
+        // Restore validator and verify the flag is cleared
+        client.restore_validator(&wallet_cause);
+        assert_eq!(client.get_validator_status(&wallet_cause), types::ValidatorStatus::Active);
+        let milestone_restored = client.get_milestone_with_validator_status(&1u64, &1u32);
+        assert_eq!(milestone_restored.validator_status, types::ValidatorStatus::Active);
     }
 }
