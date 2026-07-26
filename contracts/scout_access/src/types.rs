@@ -22,6 +22,16 @@ pub struct Subscription {
     pub subscribed_at: u64,
 }
 
+/// A recorded contact event from a scout to a player
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ContactRecord {
+    pub player_id: u64,
+    pub scout: Address,
+    /// Ledger timestamp at the moment the contact was recorded
+    pub contacted_at: u64,
+}
+
 /// A logged trial offer from a scout to a player
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -31,6 +41,28 @@ pub struct TrialOffer {
     /// IPFS/Arweave CID of the offer details document
     pub details_hash: String,
     pub logged_at: u64,
+}
+
+/// Tracks the number of contacts a Pro-tier scout has made in their current
+/// subscription period.  `period_start` is the `subscribed_at` timestamp of
+/// the current subscription; when the scout renews, a new record is stored
+/// (keyed by the new `subscribed_at`), effectively resetting the counter.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ProContactPeriod {
+    /// `subscribed_at` of the subscription this counter belongs to.
+    /// Used to detect period rollovers on subscription renewal.
+    pub period_start: u64,
+    /// Number of contacts made in this period.
+    pub count: u32,
+}
+
+/// Escrow record for a trial offer
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TrialEscrow {
+    pub amount: i128,
+    pub expires_at: u64,
 }
 
 /// Platform fee configuration
@@ -49,11 +81,17 @@ pub struct FeeConfig {
     pub sub_duration_secs: u64,
     /// Maximum contacts per month for Pro tier (default: 10)
     pub pro_contact_limit: u32,
+    /// Escrow amount for trial offers (stroops)
+    pub trial_offer_escrow_stroops: i128,
+    /// Expiry window for trial offers (seconds)
+    pub trial_offer_expiry_secs: u64,
 }
 
 #[contracttype]
 pub enum DataKey {
     Admin,
+    /// Proposed replacement admin awaiting acceptance by that address.
+    PendingAdmin,
     Initialized,
     Paused,
     FeeConfig,
@@ -77,4 +115,19 @@ pub enum DataKey {
     /// (scout, player_id) → u64 timestamp of the last trial offer sent
     /// Used to enforce the per-(scout, player) cooldown window.
     TrialOfferLastSent(Address, u64),
+    /// tier → Vec<Address> of scouts subscribed at this tier
+    TierSubscribers(SubscriptionTier),
+    /// Pro-tier contact period counter: scout → ProContactPeriod
+    ProContactCount(Address),
+    /// player_id → Vec<Address> of scouts who have contacted this player
+    PlayerContacts(u64),
+    /// scout → Vec<(player_id, trial_index)> of all trial offers sent
+    ScoutTrialOffers(Address),
+    /// (player_id, trial_index) → TrialEscrow (holds escrow amount & expiry)
+    TrialEscrow(u64, u32),
+    /// Global Vec<(player_id, trial_index)> of TrialEscrow records that have
+    /// not yet been confirmed or refunded. Maintained by `log_trial_offer`
+    /// (push on creation) and `confirm_trial_offer` (remove on cleanup) so
+    /// `expire_trial_offers` can sweep stale escrows without an off-chain index.
+    OutstandingTrialEscrows,
 }
