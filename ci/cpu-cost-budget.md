@@ -38,6 +38,7 @@ measured-cost trends can be tracked across commits.
 | scout_access   | `subscribe`                      | 20,000,000                |
 | scout_access   | `pay_to_contact`                 | 20,000,000                |
 | scout_access   | `batch_contact_players` (5 ids)  | 25,000,000                |
+| scout_access   | `expire_trial_offers` (limit=20) | 25,000,000                |
 
 These starting budgets are deliberately generous placeholders, not measured
 baselines: the environment these were authored in had no Rust toolchain

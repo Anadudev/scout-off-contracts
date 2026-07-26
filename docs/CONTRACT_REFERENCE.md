@@ -1958,6 +1958,34 @@ stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
 
 ---
 
+#### `expire_trial_offers(limit: u32) -> Result<u32, ScoutAccessError>`
+
+Admin-only sweep of pending trial offers whose escrow has passed
+`expires_at`. For each expired entry it refunds the escrowed XLM to the
+originating scout, removes the `TrialEscrow` record, and emits
+`trial_offer_expired` — the same cleanup `confirm_trial_offer` performs
+reactively when called late, run proactively and in bulk. Returns the
+number of escrows actually swept (`0` if none were due).
+
+`limit` bounds how many outstanding escrows are examined in this call,
+capped server-side at 20 regardless of the value passed in, so a large
+backlog cannot exceed the CPU-instruction budget in a single invocation
+(see `ci/cpu-cost-budget.md`). Entries not yet past `expires_at` are left
+in place. Call repeatedly (e.g. from a cron/keeper) to drain a backlog
+larger than the per-call cap.
+
+| | |
+|---|---|
+| **Auth** | Admin must sign |
+| **Errors** | `NotInitialized` · `Unauthorized` · `Overflow` |
+
+```bash
+stellar contract invoke --id $SCOUT_ACCESS_CONTRACT_ID \
+  -- expire_trial_offers --limit 20
+```
+
+---
+
 #### `has_contacted(scout: Address, player_id: u64) -> bool`
 
 Return `true` if the scout has previously called `pay_to_contact` for this

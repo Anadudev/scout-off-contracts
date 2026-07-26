@@ -49,6 +49,11 @@ const ADMIN_BUMP_LEDGERS: u32 = 2_000;
 // Trial offer TTL: ~30 days at 5 s/ledger.
 const TRIAL_TTL_THRESHOLD: u32 = 259_200;
 const TRIAL_TTL_EXTEND_TO: u32 = 518_400;
+
+// #795: upper bound on how many OutstandingTrialEscrows entries
+// expire_trial_offers will examine in a single call, so a large backlog
+// cannot exceed the CPU-instruction budget (see ci/cpu-cost-budget.md).
+const EXPIRE_TRIAL_OFFERS_MAX_LIMIT: u32 = 20;
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // Minimum interval (seconds) between subscribe calls for the same scout
@@ -766,6 +771,18 @@ impl ScoutAccessContract {
         let expires_at = now
             .checked_add(fee_cfg.trial_offer_expiry_secs)
             .ok_or(ScoutAccessError::Overflow)?;
+
+        // #795: actually collect the escrow — without this transfer the
+        // TrialEscrow record was a bookkeeping-only promise, and every
+        // refund path (confirm_trial_offer's late-expiry branch and
+        // expire_trial_offers) paid out funds the contract never held.
+        let token_addr = Self::get_token(&env)?;
+        token::Client::new(&env, &token_addr).transfer(
+            &scout,
+            &env.current_contract_address(),
+            &escrow_amount,
+        );
+
         let escrow = TrialEscrow {
             amount: escrow_amount,
             expires_at,
@@ -773,6 +790,24 @@ impl ScoutAccessContract {
         env.storage()
             .persistent()
             .set(&DataKey::TrialEscrow(player_id, next_index), &escrow);
+
+        // #795: index this escrow so expire_trial_offers can sweep it later
+        // without an off-chain indexer.
+        let outstanding_key = DataKey::OutstandingTrialEscrows;
+        let mut outstanding: soroban_sdk::Vec<(u64, u32)> = env
+            .storage()
+            .persistent()
+            .get(&outstanding_key)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+        outstanding.push_back((player_id, next_index));
+        env.storage()
+            .persistent()
+            .set(&outstanding_key, &outstanding);
+        env.storage().persistent().extend_ttl(
+            &outstanding_key,
+            TRIAL_TTL_THRESHOLD,
+            TRIAL_TTL_EXTEND_TO,
+        );
         // Emit logged event (no immediate level advance)
         events::trial_offer_logged(&env, player_id, &scout);
         Ok(next_index)
@@ -819,6 +854,7 @@ impl ScoutAccessContract {
             env.storage()
                 .persistent()
                 .remove(&DataKey::TrialEscrow(player_id, index));
+            Self::remove_from_outstanding_trial_escrows(&env, player_id, index);
             // Emit expiry event
             events::trial_offer_expired(&env, player_id, &offer.scout, index);
             return Err(ScoutAccessError::TrialOfferExpired);
@@ -839,11 +875,8 @@ impl ScoutAccessContract {
             }
         };
         let progress_client = progress_contract::Client::new(&env, &progress_addr);
-        match progress_client.try_advance_level(
-            &env.current_contract_address(),
-            &player_id,
-            &index,
-        ) {
+        match progress_client.try_advance_level(&env.current_contract_address(), &player_id, &index)
+        {
             Ok(_) => {}
             Err(e) => {
                 // Extract numeric error code from the contract error, if any.
@@ -860,17 +893,94 @@ impl ScoutAccessContract {
         env.storage()
             .persistent()
             .remove(&DataKey::TrialEscrow(player_id, index));
+        Self::remove_from_outstanding_trial_escrows(&env, player_id, index);
         // Emit confirmed event
         events::trial_offer_confirmed(&env, player_id, &offer.scout, index);
         Ok(())
     }
 
-    /// Admin helper to expire any pending trial offers that have passed their expiry window.
-    pub fn expire_trial_offers(env: Env) -> Result<(), ScoutAccessError> {
+    /// Admin helper to sweep pending trial offers that have passed their
+    /// expiry window: refunds the escrowed XLM to the originating scout,
+    /// removes the `TrialEscrow` record, and emits `trial_offer_expired`
+    /// for each swept entry. This is the same cleanup `confirm_trial_offer`
+    /// already performs reactively when called late (#795), run proactively
+    /// and in bulk.
+    ///
+    /// `limit` bounds how many `OutstandingTrialEscrows` entries are examined
+    /// in this call (capped at `EXPIRE_TRIAL_OFFERS_MAX_LIMIT`), so a large
+    /// backlog cannot exceed the CPU-instruction budget in a single
+    /// invocation — call repeatedly to drain a larger backlog. Entries not
+    /// yet past `expires_at` are left in place for a later call. Returns the
+    /// number of escrows actually swept.
+    pub fn expire_trial_offers(env: Env, limit: u32) -> Result<u32, ScoutAccessError> {
         Self::bump_instance_ttl(&env);
         require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
-        // TODO: Implement proper iteration over escrows for expiry handling.
-        Ok(())
+
+        let cap = limit.min(EXPIRE_TRIAL_OFFERS_MAX_LIMIT);
+        let index_key = DataKey::OutstandingTrialEscrows;
+        let outstanding: soroban_sdk::Vec<(u64, u32)> = env
+            .storage()
+            .persistent()
+            .get(&index_key)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+
+        let now = env.ledger().timestamp();
+        let token_addr = Self::get_token(&env)?;
+        let contract_addr = env.current_contract_address();
+
+        let process_count = cap.min(outstanding.len());
+        let mut kept: soroban_sdk::Vec<(u64, u32)> = soroban_sdk::Vec::new(&env);
+        let mut swept = 0u32;
+
+        // Only the first `process_count` entries are examined per call —
+        // this bounds the work done regardless of total backlog size.
+        for i in 0..process_count {
+            let (player_id, index) = outstanding.get(i).unwrap();
+            let escrow_key = DataKey::TrialEscrow(player_id, index);
+            let escrow: Option<TrialEscrow> = env.storage().persistent().get(&escrow_key);
+            let escrow = match escrow {
+                Some(e) => e,
+                // Already cleaned up by confirm_trial_offer; drop the stale
+                // index entry instead of re-queueing it.
+                None => continue,
+            };
+            if now <= escrow.expires_at {
+                kept.push_back((player_id, index));
+                continue;
+            }
+
+            let offer: Option<TrialOffer> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TrialOffer(player_id, index));
+            let scout = match offer {
+                Some(o) => o.scout,
+                // No originating offer to refund against; drop the orphaned
+                // escrow entry without a transfer.
+                None => {
+                    env.storage().persistent().remove(&escrow_key);
+                    continue;
+                }
+            };
+
+            token::Client::new(&env, &token_addr).transfer(&contract_addr, &scout, &escrow.amount);
+            env.storage().persistent().remove(&escrow_key);
+            events::trial_offer_expired(&env, player_id, &scout, index);
+            swept = swept.checked_add(1).ok_or(ScoutAccessError::Overflow)?;
+        }
+
+        // Entries beyond process_count were never examined this call and
+        // must be preserved for the next sweep.
+        for i in process_count..outstanding.len() {
+            kept.push_back(outstanding.get(i).unwrap());
+        }
+
+        env.storage().persistent().set(&index_key, &kept);
+        env.storage()
+            .persistent()
+            .extend_ttl(&index_key, TRIAL_TTL_THRESHOLD, TRIAL_TTL_EXTEND_TO);
+
+        Ok(swept)
     }
 
     /// Propose a replacement administrator. The current admin remains active
@@ -1220,6 +1330,29 @@ impl ScoutAccessContract {
             .ok_or(ScoutAccessError::NotInitialized)
     }
 
+    /// #795: drop `(player_id, index)` from the OutstandingTrialEscrows
+    /// sweep index. Called whenever a TrialEscrow is cleaned up outside of
+    /// `expire_trial_offers` itself, i.e. from `confirm_trial_offer`.
+    fn remove_from_outstanding_trial_escrows(env: &Env, player_id: u64, index: u32) {
+        let key = DataKey::OutstandingTrialEscrows;
+        let outstanding: soroban_sdk::Vec<(u64, u32)> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+        let mut kept: soroban_sdk::Vec<(u64, u32)> = soroban_sdk::Vec::new(env);
+        for i in 0..outstanding.len() {
+            let entry = outstanding.get(i).unwrap();
+            if entry != (player_id, index) {
+                kept.push_back(entry);
+            }
+        }
+        env.storage().persistent().set(&key, &kept);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TRIAL_TTL_THRESHOLD, TRIAL_TTL_EXTEND_TO);
+    }
+
     fn require_active_subscription(
         env: &Env,
         scout: &Address,
@@ -1317,6 +1450,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: 30 * 24 * 60 * 60,
             pro_contact_limit: 10,
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         }
     }
 
@@ -1439,6 +1574,8 @@ mod tests {
             elite_sub_stroops: 10_000_000,
             sub_duration_secs: 60 * 24 * 60 * 60,
             pro_contact_limit: 20,
+            trial_offer_escrow_stroops: 1_000_000,
+            trial_offer_expiry_secs: 7_200,
         };
 
         client.update_fee_config(&new_fees);
@@ -1453,11 +1590,7 @@ mod tests {
                 &env,
                 (
                     contract_id.clone(),
-                    (
-                        Symbol::new(&env, "fee_config_updated"),
-                        _admin.clone(),
-                    )
-                        .into_val(&env),
+                    (Symbol::new(&env, "fee_config_updated"), _admin.clone(),).into_val(&env),
                     (old_config, new_fees.clone()).into_val(&env)
                 )
             ]
@@ -1747,6 +1880,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: 30 * 24 * 60 * 60,
             pro_contact_limit: 3,
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         };
         client.initialize(&admin, &xlm, &fees);
 
@@ -1780,6 +1915,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: 30 * 24 * 60 * 60,
             pro_contact_limit: 2, // very low cap — Elite must ignore this
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         };
         client.initialize(&admin, &xlm, &fees);
 
@@ -1811,6 +1948,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: period_secs,
             pro_contact_limit: 2,
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         };
         client.initialize(&admin, &xlm, &fees);
 
@@ -1856,6 +1995,8 @@ mod tests {
             elite_sub_stroops: 7_000_000,
             sub_duration_secs: 30 * 24 * 60 * 60,
             pro_contact_limit: 0, // invalid — must be > 0
+            trial_offer_escrow_stroops: 500_000,
+            trial_offer_expiry_secs: 3_600,
         };
         let res = client.try_initialize(&admin, &xlm, &bad_fees);
         assert_eq!(res, Err(Ok(ScoutAccessError::InvalidInput)));
@@ -1880,6 +2021,65 @@ mod tests {
         let offer = client.get_trial_offer(&1u64, &1u32);
         assert_eq!(offer.player_id, 1);
         assert_eq!(offer.scout, scout);
+    }
+
+    // #795: expire_trial_offers must sweep only escrows past their
+    // expires_at, refunding the scout and removing the record, while
+    // leaving still-live escrows untouched.
+    #[test]
+    fn test_expire_trial_offers_sweeps_only_expired_escrows() {
+        let (env, admin, xlm, _contract_id, client) = setup();
+        let scout = Address::generate(&env);
+        mint_token(&env, &xlm, &admin, &scout, 100_000_000);
+        client.subscribe(&scout, &SubscriptionTier::Elite);
+
+        // Two trial offers logged now — both will be past expires_at
+        // (default_fees: trial_offer_expiry_secs = 3_600) after the jump below.
+        client.pay_to_contact(&scout, &1u64);
+        client.log_trial_offer(
+            &scout,
+            &1u64,
+            &String::from_str(&env, "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB"),
+        );
+        client.pay_to_contact(&scout, &2u64);
+        client.log_trial_offer(
+            &scout,
+            &2u64,
+            &String::from_str(&env, "QmPK2s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB"),
+        );
+
+        // A third offer, logged 30 minutes later, will still be well within
+        // its 1h expiry window when the sweep runs.
+        env.ledger().with_mut(|l| l.timestamp += 1_800);
+        client.pay_to_contact(&scout, &3u64);
+        client.log_trial_offer(
+            &scout,
+            &3u64,
+            &String::from_str(&env, "QmPK3s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB"),
+        );
+
+        // Advance past the 1h window for offers 1 & 2 (3_700s old) but not
+        // for offer 3 (only 1_900s old).
+        env.ledger().with_mut(|l| l.timestamp += 1_900);
+
+        let escrow_amount = default_fees().trial_offer_escrow_stroops;
+        let token = TokenClient::new(&env, &xlm);
+        let balance_before = token.balance(&scout);
+
+        let swept = client.expire_trial_offers(&10u32);
+        assert_eq!(swept, 2, "only the two expired escrows should be swept");
+        assert_eq!(token.balance(&scout), balance_before + escrow_amount * 2);
+
+        // Swept escrows are gone: confirming them now hits the "already
+        // gone" path, since the TrialEscrow record no longer exists.
+        let player_wallet = Address::generate(&env);
+        let res1 = client.try_confirm_trial_offer(&player_wallet, &1u64, &1u32);
+        assert_eq!(res1, Err(Ok(ScoutAccessError::TrialOfferAlreadyConfirmed)));
+        let res2 = client.try_confirm_trial_offer(&player_wallet, &2u64, &1u32);
+        assert_eq!(res2, Err(Ok(ScoutAccessError::TrialOfferAlreadyConfirmed)));
+
+        // A second sweep finds nothing new to expire — offer 3 is not due yet.
+        assert_eq!(client.expire_trial_offers(&10u32), 0);
     }
 
     #[test]
@@ -2432,6 +2632,8 @@ mod tests {
             elite_sub_stroops: 10_000_000,
             sub_duration_secs: 60 * 24 * 60 * 60,
             pro_contact_limit: 15,
+            trial_offer_escrow_stroops: 1_000_000,
+            trial_offer_expiry_secs: 7_200,
         };
         let result = client.try_update_fee_config(&new_fees);
         assert!(result.is_ok());
@@ -3354,9 +3556,15 @@ mod tests {
         mint_token(&env, &xlm, &admin, &scout_elite, 10_000_000);
 
         // All three must succeed — no prior subscription means no guard.
-        assert!(client.try_subscribe(&scout_basic, &SubscriptionTier::Basic).is_ok());
-        assert!(client.try_subscribe(&scout_pro, &SubscriptionTier::Pro).is_ok());
-        assert!(client.try_subscribe(&scout_elite, &SubscriptionTier::Elite).is_ok());
+        assert!(client
+            .try_subscribe(&scout_basic, &SubscriptionTier::Basic)
+            .is_ok());
+        assert!(client
+            .try_subscribe(&scout_pro, &SubscriptionTier::Pro)
+            .is_ok());
+        assert!(client
+            .try_subscribe(&scout_elite, &SubscriptionTier::Elite)
+            .is_ok());
     }
 
     /// A same-tier re-subscribe while the subscription is still active is not
