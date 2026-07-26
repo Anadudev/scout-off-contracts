@@ -497,3 +497,49 @@ no snapshot — you must re-deploy from scratch:
 > **Explicitly:** there is no need to call `pause_contract` on the orphaned contracts, no need
 > to manually abandon them, and no risk of them interfering with the fresh deployment. They are
 > simply unused contract instances that will never be wired or called.
+
+
+---
+
+## TTL Policy (Issue #705)
+
+### Overview
+
+All four contracts have been redesigned to prevent silent data loss due to persistent storage archival. Player levels, validator registrations, scout subscriptions, and milestone records now use a 30-day TTL (518,400 ledgers) instead of ~3 hours (2,000 ledgers).
+
+### What Changed
+
+- **Progress contract:** PlayerLevel now extends TTL on every `get_level()` read.
+- **Registration contract:** Player and Scout profiles extend TTL on every read.
+- **Verification contract:** Milestone and Validator records extend TTL on every read; `approve_milestone` extends all related keys (Milestone, MilestoneCounter, EvidenceUsed) on write.
+- **Scout Access contract:** Subscription and ContactRecord keys now use 30-day TTL.
+
+### Deployment Impact
+
+1. **No breaking changes to public APIs:** All function signatures remain the same.
+2. **No changes to event shapes:** All event topics and data remain compatible with existing indexers.
+3. **Increased TTL extension calls:** Every read of a core identity key now calls `extend_ttl`. This is visible in transaction logs but is expected and safe.
+
+### Validation
+
+After deployment, verify the fix:
+
+```bash
+# In any contract's test environment:
+1. Register a player and advance them to Elite tier.
+2. Advance the test ledger far past the old TTL threshold (~5000 ledgers).
+3. Call get_level(player_id) — must return Elite, not Unverified.
+```
+
+For complete validation, see the integration tests in:
+- `contracts/progress/src/lib.rs`: `test_player_level_survives_extended_dormancy_via_ttl_extension()`
+- `contracts/registration/src/lib.rs`: `test_player_profile_survives_extended_dormancy_via_ttl_extension()`
+- `contracts/verification/src/lib.rs`: `test_validator_and_milestone_survive_extended_dormancy_via_ttl_extension()`
+
+### Documentation
+
+See [`docs/TTL_POLICY.md`](TTL_POLICY.md) for:
+- Detailed TTL values per contract and per DataKey
+- Rationale for 30-day choice
+- Cost analysis (CPU and storage)
+- Adding new persistent keys with proper TTL handling

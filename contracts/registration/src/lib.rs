@@ -54,9 +54,13 @@ const INSTANCE_TTL_MIN: u32 = 100;
 #[allow(dead_code)]
 const INSTANCE_TTL_MAX: u32 = 500;
 
-// Persistent storage TTL bump for player profiles and admin key.
+// Core identity TTL: 30 days at ~5s/ledger ≈ 518_400 ledgers.
+// Player and scout profiles are core identity data that must survive extended dormancy.
+// Composite indexes (PlayersByLevelRegion, PlayersByLevel) are derived from profiles
+// and must live as long as the profiles they index.
 const PERSISTENT_TTL_MIN: u32 = 500;
-const PERSISTENT_TTL_MAX: u32 = 2_000;
+const PERSISTENT_TTL_MAX: u32 = 518_400;
+const ADMIN_BUMP_LEDGERS: u32 = 518_400;
 
 // Admin key TTL — kept equal to PERSISTENT_TTL_MAX for simplicity.
 const ADMIN_BUMP_LEDGERS: u32 = 2_000;

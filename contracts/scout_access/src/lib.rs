@@ -40,13 +40,17 @@ mod progress_contract {
 const INSTANCE_TTL_MIN: u32 = 100;
 const INSTANCE_TTL_MAX: u32 = 500;
 
-// Persistent storage TTL bump for subscriptions / contact records.
+// Core identity TTL: 30 days at ~5s/ledger ≈ 518_400 ledgers.
+// Scout subscriptions and contact records are core identity data.
+// Trial offers follow a distinct policy (see TRIAL_* constants below).
 const PERSISTENT_TTL_MIN: u32 = 200;
-const PERSISTENT_TTL_MAX: u32 = 2_000;
-// Admin key TTL — kept equal to PERSISTENT_TTL_MAX for simplicity.
-const ADMIN_BUMP_LEDGERS: u32 = 2_000;
+const PERSISTENT_TTL_MAX: u32 = 518_400;
 
-// Trial offer TTL: ~30 days at 5 s/ledger.
+// Admin key bumped to match other contracts, ensuring consistent cross-contract behavior.
+const ADMIN_BUMP_LEDGERS: u32 = 518_400;
+
+// Trial offer TTL: ~30 days at 5 s/ledger. Trial offers are ephemeral and do not
+// carry the same lifetime significance as identity records, so they follow their own (longer than default but reasonable) schedule.
 const TRIAL_TTL_THRESHOLD: u32 = 259_200;
 const TRIAL_TTL_EXTEND_TO: u32 = 518_400;
 
