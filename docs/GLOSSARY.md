@@ -1,289 +1,186 @@
 # ScoutChain Glossary
 
-Definitions for key domain terms, on-chain types, and contract concepts used
-across the ScoutChain codebase, documentation, and API reference. Entries are
-listed alphabetically.
-
----
-
-## Admin
-
-The privileged Stellar account that owns a contract. Set once during
-`initialize` and transferable (irreversibly) via `transfer_admin`. Only the
-admin may call fee management, validator registry, and circuit-breaker
-functions.
-
----
-
-## advance_level
-
-The `progress` contract function that increments a player's `ProgressLevel` by
-exactly one tier (0→1, 1→2, or 2→3). Called atomically by
-`verification.approve_milestone` (for levels 1 and 2) and, for level 3, either
-directly by `scout_access.log_trial_offer` or via a `confirm_trial_offer` flow.
-Cannot skip tiers; attempting to advance beyond `EliteTier` returns
-`AlreadyAtMaxLevel`.
-
-See also: [ProgressLevel](#progresslevel), [Trial Offer](#trial-offer).
-
----
-
-## approve_milestone
-
-The `verification` contract function called by a registered validator to confirm
-a player achievement. Records a `Milestone` on-chain and immediately
-cross-calls `progress.advance_level`, making the milestone approval and the
-level change atomic in the same Stellar transaction.
-
-See also: [Validator](#validator), [Milestone](#milestone).
-
----
-
-## batch_contact_players
-
-A `scout_access` function that allows a scout to unlock multiple player
-profiles in a single transaction. Contact fees are charged once per new player;
-already-contacted players are silently skipped. Pro-tier monthly contact
-quotas are enforced across the batch.
-
----
-
-## Circuit Breaker
-
-The `pause_contract` / `unpause_contract` admin mechanism present on all four
-contracts. While paused, all state-changing operations revert with
-`ContractPaused`; read-only queries remain available. Designed for emergency
-response without state loss.
+Domain-specific terms used throughout the contracts, documentation, and SDKs.
+Each definition includes a role description and links to the relevant contract
+functions in [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md).
 
 ---
 
 ## CID (Content Identifier)
 
-An IPFS or Arweave content address used to reference off-chain documents
-(highlight reels, evidence, trial offer terms). Two formats are accepted:
+A self-describing content hash produced by IPFS or Arweave. CIDs are stored
+on-chain as strings inside player profiles and milestone evidence fields so
+that off-chain video and photo assets can be retrieved and verified without
+trusting a centralised server.
 
-- **CIDv0** — starts with `Qm`, exactly 46 characters, base58btc encoding.
-- **CIDv1** — starts with `bafy`, 59–128 characters, base32 encoding.
-
-Validation is enforced on-chain in `register_player`, `approve_milestone`, and
-`log_trial_offer` via `validate_cid`.
-
----
-
-## ContactRecord
-
-A persistent storage entry in `scout_access` keyed by `(player_id, scout)`
-that records that a scout has paid to contact a player. Prevents duplicate
-charges on repeated `pay_to_contact` calls.
+- IPFS CIDs start with `Qm…` (CIDv0) or `bafy…` (CIDv1).
+- The `evidence_hash` parameter of `approve_milestone` and the `details_hash`
+  parameter of `log_trial_offer` both accept CIDs.
+- Relevant functions: `register_player`, `update_profile`, `approve_milestone`,
+  `log_trial_offer` — see [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md).
 
 ---
 
-## EliteTier
+## Contact Fee
 
-`ProgressLevel` 3 — the highest tier. A player reaches `EliteTier` when an
-Elite-tier scout logs a trial offer on-chain via `log_trial_offer`. No further
-`advance_level` calls are possible; `AlreadyAtMaxLevel` is returned for any
-subsequent attempt.
+A micro-payment in XLM (denominated in stroops) that a scout pays to unlock a
+specific player's full contact details. Controlled by the `contact_fee_stroops`
+field in [`FeeConfig`](#feeconfig).
+
+- Relevant function: [`pay_to_contact`](CONTRACT_REFERENCE.md#pay_to_contactscout-address-player_id-u64---resultscoutaccesserror).
 
 ---
 
 ## FeeConfig
 
-Platform fee configuration stored in `scout_access` instance storage. Contains
-stroops values for each subscription tier, the per-contact fee, the
-subscription duration in seconds, and the Pro-tier monthly contact limit. All
-numeric fields must be positive; updated by admin via `update_fee_config`.
+The primary configuration struct for the `scout_access` contract. Controls all
+subscription and pay-to-contact fee rates. Set at `initialize` time and
+adjustable via `update_fee_config`.
+
+| Field | Type | Unit | Valid Range | Typical Value |
+|---|---|---|---|---|
+| `contact_fee_stroops` | `i128` | stroops (1 XLM = 10 000 000 stroops) | > 0 | `100000` (0.01 XLM) |
+| `basic_sub_stroops` | `i128` | stroops | > 0 | `1000000` (0.1 XLM) |
+| `pro_sub_stroops` | `i128` | stroops | > 0 | `3000000` (0.3 XLM) |
+| `elite_sub_stroops` | `i128` | stroops | > 0 | `7000000` (0.7 XLM) |
+| `sub_duration_secs` | `u64` | duration in seconds (not a Unix timestamp) | > 0 | `2592000` (30 days) |
+
+All fields must be strictly greater than zero; `initialize` and
+`update_fee_config` return `InvalidInput` otherwise.
+
+`pro_contact_limit` caps the number of unique players a **Pro-tier** scout
+may contact in a single subscription period. Reaching the limit causes
+`pay_to_contact` to return `ProContactLimitReached` (code 20). **Elite-tier
+scouts are exempt** from this cap.
+
+- Relevant functions: `initialize`, `update_fee_config`, `get_fee_config` — see
+  [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md#scout_access).
 
 ---
 
 ## Milestone
 
-A verified player achievement recorded by the `verification` contract. Each
-`Milestone` stores the player ID, the approving validator's address, a
-description, an IPFS/Arweave evidence CID, the approval timestamp, and the
-ledger sequence number for tamper-proof auditability.
+A verified player achievement recorded on-chain by an authorised validator.
+Each milestone stores a plain-text description, an IPFS/Arweave evidence CID,
+the approving validator's address, and a ledger sequence number for
+auditability.
+
+Examples: "Scored 5 goals in Local Cup", "Top speed clocked at 32 km/h".
+
+- Relevant functions: `approve_milestone`, `get_milestone`,
+  `get_milestone_count` — see
+  [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md#verification).
 
 ---
 
-## pay_to_contact
+## Player
 
-A `scout_access` function that charges `contact_fee_stroops` XLM to unlock a
-player's contact details. Requires an active, non-expired subscription. Pro
-scouts are limited to `pro_contact_limit` contacts per calendar month.
+A registered footballer with an on-chain identity. A player is identified by a
+`player_id` (auto-incremented `u64`) and a Stellar wallet address. Players
+start at `ProgressLevel` 0 (Unverified) and advance through up to four levels
+as validators approve milestones and scouts log trial offers.
 
----
-
-## ProgressEntry
-
-An immutable history record appended to the `progress` contract every time a
-player's level changes (advance or reset). Each entry stores the old and new
-`ProgressLevel`, the authorizing caller, the Unix timestamp, the `milestone_ref`
-index, and the ledger sequence number.
+- Relevant functions: `register_player`, `get_player`, `filter_players` — see
+  [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md#registration).
 
 ---
 
-## ProgressLevel
+## Progress Level
 
-The four-tier player verification scale:
+The four-tier trust ranking attached to every player profile. Levels advance
+sequentially; skipping or reversing is blocked by the progress contract (admin
+`reset_player_level` is the only exception).
 
-| Integer | Variant               | Meaning                                                |
-|---------|-----------------------|--------------------------------------------------------|
-| 0       | `Unverified`          | Profile created; no verifications yet                  |
-| 1       | `VerifiedIdentity`    | Identity confirmed by a validator                      |
-| 2       | `PerformanceMilestones` | Performance stats verified by an approved validator  |
-| 3       | `EliteTier`           | Trial offer logged by an Elite scout                   |
+| Level | Variant | Meaning |
+|---|---|---|
+| 0 | `Unverified` | Profile created, no verifications |
+| 1 | `VerifiedIdentity` | Identity confirmed by a validator |
+| 2 | `PerformanceMilestones` | Performance stats verified by a validator |
+| 3 | `EliteTier` | Trial offer logged by an Elite-tier scout |
 
-Valid transitions: **0 → 1 → 2 → 3** (sequential only). Skipping or reversing
-levels is rejected with `InvalidProgressTransition` except when an admin calls
-`reset_player_level`.
+- Relevant functions: `advance_level`, `get_level`, `get_progress_history`,
+  `reset_player_level` — see
+  [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md#progress).
 
 ---
 
 ## Scout
 
-A registered talent scout who accesses the player pool through the
-`scout_access` contract. Scouts subscribe to a tier (`Basic`, `Pro`, or
-`Elite`) to unlock contact and trial-offer capabilities.
+A talent-discovery professional registered on-chain with a Stellar wallet.
+Scouts purchase a subscription tier (`Basic`, `Pro`, or `Elite`) to access the
+filtered player pool, pay per-contact fees to unlock player details, and (Elite
+only) log trial offers that advance a player to Level 3.
+
+- Relevant functions: `register_scout`, `subscribe`, `pay_to_contact`,
+  `log_trial_offer` — see
+  [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md#registration).
 
 ---
 
-## Subscription
+## Stroop
 
-An active `scout_access` record keyed by the scout's wallet address. Contains
-the tier, the `expires_at` Unix timestamp, and the `subscribed_at` timestamp.
-An expired subscription is treated the same as no subscription — renew via
-`subscribe` before performing any contact or trial-offer operations.
+The smallest unit of XLM. 1 XLM = 10 000 000 stroops. All fee fields in
+`FeeConfig` and all fee-related return values in the `scout_access` contract
+are expressed in stroops (Rust type `i128`).
 
 ---
 
-## SubscriptionTier
+## Subscription Tier
 
-Three tiers of scout access:
+The access level purchased by a scout. Determines which players are visible and
+whether trial offers can be logged.
 
-| Tier    | Accessible Levels | pay_to_contact | log_trial_offer | Monthly Contact Limit |
-|---------|-------------------|----------------|-----------------|-----------------------|
-| Basic   | Level 1–3         | ❌              | ❌               | N/A                   |
-| Pro     | Level 0–3         | ✅              | ❌               | `pro_contact_limit`   |
-| Elite   | Level 0–3         | ✅              | ✅               | Unlimited             |
+| Tier | Variant | Notes |
+|---|---|---|
+| Basic | `Basic` | Access to the filtered player pool |
+| Pro | `Pro` | Higher trust signal; wider discovery |
+| Elite | `Elite` | Required to call `log_trial_offer` |
 
-Downgrades while a subscription is still active are rejected
-(`SubscriptionDowngradeNotAllowed`). Upgrades are permitted but must observe a
-minimum 1-hour interval between `subscribe` calls (`UpgradeTooSoon`).
+Subscriptions expire after `sub_duration_secs` (default 30 days). Downgrades
+while a subscription is active are blocked; upgrades charge the full new-tier
+fee with no proration.
+
+- Relevant functions: `subscribe`, `get_subscription` — see
+  [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md#scout_access).
+
+---
+
+## Timestamp
+
+All absolute on-chain timestamps in this project are Unix seconds: the number
+of seconds elapsed since 1970-01-01 00:00:00 UTC, obtained from the Soroban
+ledger timestamp. This applies to fields such as `registered_at`, `updated_at`,
+`approved_at`, `disputed_at`, `expires_at`, `subscribed_at`, `contacted_at`,
+`logged_at`, and `period_start`, as well as the `since_timestamp` parameter of
+`get_history_since`.
+
+`ledger_sequence` is not a timestamp; it is the Soroban ledger sequence number
+recorded alongside an event. `sub_duration_secs` is a duration in seconds, not
+an absolute Unix timestamp.
 
 ---
 
 ## Trial Offer
 
-An on-chain record — stored as a `TrialOffer` struct — that a registered Elite
-scout has extended a formal trial to a player. Logging a trial offer is the
-trigger that advances a player to `EliteTier` (Level 3).
+An on-chain record that a scout has offered a player a trial or professional
+opportunity. Logging a trial offer also advances the player to `EliteTier`
+(Level 3) via a cross-contract call to the progress contract. Only scouts with
+an active Elite subscription may log trial offers.
 
-### TrialOffer (struct)
-
-```rust
-pub struct TrialOffer {
-    pub player_id: u64,
-    pub scout: Address,
-    pub details_hash: String, // IPFS/Arweave CID of the offer document
-    pub logged_at: u64,       // Unix timestamp
-}
-```
-
-`TrialOffer` records are written atomically alongside the cross-contract
-`advance_level` call inside `log_trial_offer`. The offer is stored
-permanently; the player level advances in the same Stellar transaction.
-
-A per-`(scout, player)` cooldown of 24 hours is enforced: submitting a second
-trial offer from the same scout to the same player within 24 hours returns
-`TrialOfferRateLimited`.
-
-### TrialEscrow (escrow-and-confirmation flow)
-
-> **Note:** The `TrialEscrow` concept describes the *intended* two-step
-> escrow-and-confirmation flow that supersedes the original single-step
-> `log_trial_offer` design. It is documented here so that readers relying
-> solely on the Glossary understand the full lifecycle, including the escrow
-> and refund paths.
-
-In the escrow-and-confirmation model the trial offer lifecycle has two stages:
-
-1. **Escrow stage** (`log_trial_offer`) — The Elite scout calls
-   `log_trial_offer`, which creates a `TrialOffer` record and places the offer
-   in a *pending* state. At this stage the player's level does **not** advance
-   immediately. Instead, the offer awaits explicit confirmation.
-
-2. **Confirmation stage** (`confirm_trial_offer`) — A second call confirms the
-   offer (by the player, admin, or another authorised party depending on the
-   deployment). Only after confirmation does the contract call
-   `progress.advance_level`, advancing the player to `EliteTier`.
-
-The distinction matters for off-chain consumers:
-
-| Property | `TrialOffer` (immediate) | `TrialEscrow` (two-step) |
-|----------|--------------------------|--------------------------|
-| When level advances | At `log_trial_offer` call | At `confirm_trial_offer` call |
-| Player must act | No | Yes (or admin) |
-| Offer can expire | No built-in expiry | Yes — `expires_at` deadline enforced |
-| Unconfirmed offer refundable | N/A | Yes — scout may reclaim XLM if expired |
-| Indexer must handle | Single event | Two events: `trial_offer_logged` + `trial_offer_confirmed` |
-
-**Key distinction for indexers and UI**: if your deployment uses the
-escrow-and-confirmation flow, do **not** treat a `trial_offer_logged` event as
-proof that the player has reached `EliteTier`. Only a `trial_offer_confirmed`
-event guarantees the level has advanced. Always verify the player's current
-level via `progress.get_level` before displaying it as `EliteTier`.
-
-See also: [advance_level](#advance_level), [EliteTier](#elitetier),
-[ProgressLevel](#progresslevel).
+- Relevant functions: `log_trial_offer`, `get_trial_offer`, `get_trial_count`
+  — see [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md#scout_access).
 
 ---
 
 ## Validator
 
-A trusted on-chain actor — typically a local coach, academy director, or
-certified trainer — registered by the admin in the `verification` contract.
-Only active validators may call `approve_milestone`. Validators can be revoked
-(`revoke_validator`) but not deleted; revoked validators remain in the registry
-with `active: false`.
+A trusted third party (local coach, academy director, or certified trainer)
+registered by the platform admin. Only active validators may call
+`approve_milestone`. A validator can be revoked by the admin; revoked validators
+cannot approve further milestones until re-activated. If a validator is revoked
+for cause (e.g. misconduct), their past milestones are flagged so they can be
+weighed appropriately by scouts and indexers.
 
----
-
-## VerifiedIdentity
-
-`ProgressLevel` 1. Reached when a validator calls `approve_milestone` confirming
-a player's identity (e.g. active club membership or KYC). Scouts with a Basic
-subscription or higher can view players at this level and above.
-
----
-
-## PerformanceMilestones
-
-`ProgressLevel` 2. Reached after a second `approve_milestone` call confirming
-performance statistics or match footage verified by an approved validator.
-Pro and Elite scouts can view and contact players at this level.
-
----
-
-## Unverified
-
-`ProgressLevel` 0. The starting state for every newly registered player.
-The player has created a profile and uploaded data but no validator has yet
-confirmed their identity. Only Pro and Elite scouts can view players at Level 0.
-
----
-
-## validate_cid
-
-A shared utility in `scoutchain-shared-types` that checks whether a `String`
-is a valid IPFS CIDv0 (`Qm…`, 46 chars) or CIDv1 (`bafy…`, 59–128 chars).
-Used by `approve_milestone` and `log_trial_offer` to reject malformed
-content-address arguments before writing to persistent storage.
-
----
-
-## XLM / Stroops
-
-The native Stellar asset used for all on-chain fee payments in ScoutChain.
-Contract amounts are always expressed in **stroops** (1 XLM = 10,000,000
-stroops) to avoid floating-point handling in WASM contracts. All `FeeConfig`
-fields ending in `_stroops` are denominated in stroops.
+- Relevant functions: `register_validator`, `revoke_validator`,
+  `get_validator_status`, `approve_milestone`, `get_milestone_with_validator_status` — see
+  [CONTRACT_REFERENCE.md](CONTRACT_REFERENCE.md#verification).

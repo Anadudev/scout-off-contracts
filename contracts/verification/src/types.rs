@@ -8,11 +8,19 @@ pub enum ValidatorStatus {
     NotRegistered,
     Active,
     Revoked,
+    RevokedForCause,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MilestoneWithValidatorStatus {
+    pub milestone: Milestone,
+    pub validator_status: ValidatorStatus,
 }
 
 /// A single verified milestone record
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Milestone {
     pub player_id: u64,
     pub validator: Address,
@@ -51,9 +59,32 @@ pub struct GlobalMilestoneIndexPage {
     pub total: u32,
 }
 
+/// A player-initiated dispute for a milestone.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MilestoneDispute {
+    pub player_id: u64,
+    pub milestone_index: u32,
+    pub reason: String,
+    pub disputed_at: u64,
+    pub resolved: bool,
+    pub upheld: bool,
+}
+
+/// A lightweight reference to a milestone (player + index).
+/// Stored in `DataKey::ValidatorMilestones` as a compact per-validator index.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MilestoneRef {
+    pub player_id: u64,
+    pub milestone_index: u32,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
+    /// Proposed replacement admin awaiting acceptance by that address.
+    PendingAdmin,
     Initialized,
     Paused,
     ProgressContract,
@@ -66,4 +97,16 @@ pub enum DataKey {
     ValidatorVector,
     TotalMilestoneCount,
     GlobalMilestoneIndex,
+    /// Persistent index: validator wallet → Vec<u64> of distinct player_ids
+    /// for which that validator has approved at least one milestone.
+    /// Updated on every `approve_milestone` call (duplicates are skipped).
+    ValidatorPlayers(Address),
+    MilestoneDispute(u64, u32),
+    ActiveValidatorCount,
+    TotalValidatorCount,
+    /// Evidence hash → bool for global uniqueness check.
+    EvidenceUsed(String),
+    ValidatorMilestones(Address),
+    ActiveDisputesCount,
+    ValidatorRevokedForCause(Address),
 }

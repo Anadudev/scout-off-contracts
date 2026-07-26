@@ -62,6 +62,14 @@ pub struct FilterResult {
     pub next_cursor: u64,
 }
 
+/// Direct status for a registered player.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayerStatus {
+    Active,
+    Deactivated,
+}
+
 /// Scout profile stored on-chain
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -78,6 +86,9 @@ pub struct ScoutProfile {
 pub enum DataKey {
     /// Admin wallet address authorized to manage validators and fees
     Admin,
+    /// Proposed replacement admin. Set by `propose_admin` and removed after
+    /// the proposed address proves control by calling `accept_admin`.
+    PendingAdmin,
     /// Boolean flag indicating if contract has been initialized
     Initialized,
     /// Boolean flag indicating if contract is paused (circuit breaker)
@@ -98,6 +109,10 @@ pub enum DataKey {
     PlayerIndex,
     /// Address of the progress contract allowed to call set_player_level
     ProgressContract,
+    /// Explicit player level override used for admin-seeded players or
+    /// progress updates that should be visible to reads even before a progress
+    /// contract is wired.
+    PlayerLevel(u64),
     /// Composite index: (ProgressLevel, region) → Vec<u64> of player IDs.
     /// Used by `filter_players` for combined level+region queries so only
     /// matching players are loaded, avoiding a full scan of `PlayerIndex`.
@@ -106,4 +121,8 @@ pub enum DataKey {
     /// Primary lookup path for level-filtered queries without a region constraint.
     /// Falls back to `PlayerIndex` only when no level filter is specified.
     PlayersByLevel(ProgressLevel),
+    /// Deactivation flag for a player. When present and `true`, the player is
+    /// hidden from `filter_players` results while their profile and history are
+    /// fully preserved. Set by `deactivate_player`, cleared by `reactivate_player`.
+    PlayerDeactivated(u64),
 }
