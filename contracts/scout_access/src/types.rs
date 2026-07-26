@@ -125,4 +125,9 @@ pub enum DataKey {
     ScoutTrialOffers(Address),
     /// (player_id, trial_index) → TrialEscrow (holds escrow amount & expiry)
     TrialEscrow(u64, u32),
+    /// Global Vec<(player_id, trial_index)> of TrialEscrow records that have
+    /// not yet been confirmed or refunded. Maintained by `log_trial_offer`
+    /// (push on creation) and `confirm_trial_offer` (remove on cleanup) so
+    /// `expire_trial_offers` can sweep stale escrows without an off-chain index.
+    OutstandingTrialEscrows,
 }

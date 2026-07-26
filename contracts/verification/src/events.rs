@@ -4,6 +4,7 @@ use soroban_sdk::{Address, Env, String, Symbol};
 pub const MILESTONE_APPROVED: &str = "milestone_approved";
 pub const VALIDATOR_REGISTERED: &str = "validator_registered";
 pub const VALIDATOR_REVOKED: &str = "validator_revoked";
+pub const VALIDATOR_REVOKED_FOR_CAUSE: &str = "validator_revoked_for_cause";
 pub const CONTRACT_PAUSED: &str = "contract_paused";
 pub const CONTRACT_UNPAUSED: &str = "contract_unpaused";
 pub const CONTRACT_INITIALIZED: &str = "contract_initialized";
@@ -61,6 +62,14 @@ pub fn validator_registered(env: &Env, wallet: &Address, credentials: &String) {
 pub fn validator_revoked(env: &Env, admin: &Address, wallet: &Address, reason: &String) {
     env.events().publish(
         (Symbol::new(env, "validator_revoked"), admin.clone()),
+        (wallet.clone(), reason.clone()),
+    );
+}
+
+/// topics: (event_name, admin)  data: (wallet, reason)
+pub fn validator_revoked_for_cause(env: &Env, admin: &Address, wallet: &Address, reason: &String) {
+    env.events().publish(
+        (Symbol::new(env, "validator_revoked_for_cause"), admin.clone()),
         (wallet.clone(), reason.clone()),
     );
 }
