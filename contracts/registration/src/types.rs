@@ -78,6 +78,9 @@ pub struct ScoutProfile {
 pub enum DataKey {
     /// Admin wallet address authorized to manage validators and fees
     Admin,
+    /// Proposed replacement admin. Set by `propose_admin` and removed after
+    /// the proposed address proves control by calling `accept_admin`.
+    PendingAdmin,
     /// Boolean flag indicating if contract has been initialized
     Initialized,
     /// Boolean flag indicating if contract is paused (circuit breaker)
@@ -106,4 +109,8 @@ pub enum DataKey {
     /// Primary lookup path for level-filtered queries without a region constraint.
     /// Falls back to `PlayerIndex` only when no level filter is specified.
     PlayersByLevel(ProgressLevel),
+    /// Deactivation flag for a player. When present and `true`, the player is
+    /// hidden from `filter_players` results while their profile and history are
+    /// fully preserved. Set by `deactivate_player`, cleared by `reactivate_player`.
+    PlayerDeactivated(u64),
 }
