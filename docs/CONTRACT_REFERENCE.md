@@ -596,7 +596,7 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
 #### `revoke_validator(wallet: Address, reason: Option<String>) -> Result<(), VerificationError>`
 
 Deactivate a validator. Revoked validators cannot approve milestones.
-`reason` is optional and capped at 128 bytes.
+`reason` is optional and capped at 128 bytes. If the reason is not exactly `"Routine"`, the validator is considered revoked for cause. This emits an additional `validator_revoked_for_cause` event and updates their status to `RevokedForCause` so off-chain indexers and `get_milestone_with_validator_status` can flag their historical milestones.
 
 | | |
 |---|---|
@@ -616,7 +616,7 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
 
 Revoke multiple validators in a single atomic transaction. Applies the same
 revoke logic as `revoke_validator` to each wallet in `wallets`, emitting one
-`validator_revoked` event per revocation. If any wallet is not registered the
+`validator_revoked` event per revocation (and `validator_revoked_for_cause` if the reason is not `"Routine"`). If any wallet is not registered the
 entire batch fails and no revocations are applied.
 
 | | |
@@ -716,7 +716,7 @@ stellar contract invoke --id $VERIFICATION_CONTRACT_ID -- get_validators
 
 #### `get_validator_status(wallet: Address) -> ValidatorStatus`
 
-Return the detailed status of a validator wallet: `Active`, `Revoked`, or
+Return the detailed status of a validator wallet: `Active`, `Revoked`, `RevokedForCause`, or
 `NotRegistered`. Prefer this over `is_active_validator` for precise status
 checks.
 
@@ -761,6 +761,22 @@ Read a specific milestone record. Indices start at `1`.
 ```bash
 stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
   -- get_milestone --player_id 1 --index 1
+```
+
+---
+
+#### `get_milestone_with_validator_status(player_id: u64, index: u32) -> Result<MilestoneWithValidatorStatus, VerificationError>`
+
+Read a specific milestone record along with the current status of the validator who approved it. Useful for checking if the approving validator was later revoked for cause.
+
+| | |
+|---|---|
+| **Auth** | None |
+| **Errors** | `MilestoneNotFound` |
+
+```bash
+stellar contract invoke --id $VERIFICATION_CONTRACT_ID \
+  -- get_milestone_with_validator_status --player_id 1 --index 1
 ```
 
 ---
